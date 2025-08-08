@@ -44,13 +44,12 @@ STICKER = (
 )
 
 # -----------------------------------------------------------------------------
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-# ここからガチャ機能の追加
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# ガチャ機能
+# -----------------------------------------------------------------------------
 GACHA_TRIGGER = "<:img:1332781427498029106>"
 
 # ガチャ用のスタンプを定義
-GACHA_STAR_1 = ("<:JYUNYA:921397676166234162>", "<:maiahi:1385967824173924354>", "<:emoji_33:901741259260039239>")
+GACHA_STAR_1 = ("<:JYUNYA:921397676166234162>", "<:maiahi:855369574819168266>", "<:emoji_33:901741259260039239>")
 GACHA_STAR_2 = ("<:beerjunya:859283357841489950>",)
 GACHA_STAR_3 = ("<:rainbowjunya2:930782219490983937>",)
 
@@ -73,8 +72,11 @@ def perform_gacha_draw(guaranteed=False):
     # 選択されたカテゴリの中からランダムに1つのスタンプを選択
     return random.choice(chosen_category)
 
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# この関数を修正しました
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 async def send_gacha_results(message):
-    """ガチャを10回実行し、結果を送信する"""
+    """ガチャを10回実行し、結果を5つずつ改行して送信する"""
     results = []
     # 1〜9回目は通常の確率で抽選
     for _ in range(9):
@@ -83,12 +85,12 @@ async def send_gacha_results(message):
     # 10回目は★2以上確定の確率で抽選
     results.append(perform_gacha_draw(guaranteed=True))
     
-    # 結果を整形して送信
-    await message.channel.send(" ".join(results))
-
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-# ガチャ機能の追加ここまで
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    # 結果を5つずつに分けて整形
+    line1 = " ".join(results[0:5])
+    line2 = " ".join(results[5:10])
+    
+    # 改行を入れて送信
+    await message.channel.send(f"{line1}\n{line2}")
 
 def get_random_shot():
     """インデントエラーを修正"""
@@ -109,9 +111,7 @@ async def on_message(message):
     if message.author == client.user or message.author.bot:
         return
         
-    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-    # ガチャのトリガーを追加
-    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    # ガチャのトリガー
     if GACHA_TRIGGER in message.content:
         await send_gacha_results(message)
         return
