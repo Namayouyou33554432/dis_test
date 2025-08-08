@@ -4,9 +4,6 @@ import discord
 from flask import Flask
 import threading
 import asyncio
-# import logging  <- ★ loggingモジュールは不要なので削除
-
-# ★ loggingの設定ブロックをすべて削除
 
 # -----------------------------------------------------------------------------
 # Flask (Render用Webサーバー)
@@ -18,8 +15,13 @@ def hello():
     """Renderが正常に起動しているか確認するためのルート"""
     return "Discord Bot is active now"
 
-# (SHOT_TYPE, STICKER, GACHA関連の定義は変更なし)
-# ... (省略) ...
+# -----------------------------------------------------------------------------
+# Discordボットの設定
+# -----------------------------------------------------------------------------
+intents = discord.Intents.default()
+intents.message_content = True
+client = discord.Client(intents=intents)
+
 SHOT_TYPE = (
     (4, "紅霊夢A", "紅霊夢B", "紅魔理沙A", "紅魔理沙B"),
     (6, "妖霊夢A", "妖霊夢B", "妖魔理沙A", "妖魔理沙B", "妖咲夜A", "妖咲夜B"),
@@ -41,27 +43,55 @@ STICKER = (
     "<:chiaki:1318964308628996106>",
 )
 
+# -----------------------------------------------------------------------------
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# ここからガチャ機能の追加
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 GACHA_TRIGGER = "<:img:1332781427498029106:>"
+
+# ガチャ用のスタンプを定義
 GACHA_STAR_1 = ("<:JYUNYA:921397676166234162:>", "<:maiahi:1385967824173924354:>", "<:emoji_33:901741259260039239:>")
 GACHA_STAR_2 = ("<:beerjunya:859283357841489950:>",)
 GACHA_STAR_3 = ("<:rainbowjunya2:930782219490983937:>",)
+
+# 各レアリティの抽選アイテムリスト
 GACHA_ITEMS = [GACHA_STAR_1, GACHA_STAR_2, GACHA_STAR_3, STICKER]
+# 通常の抽選確率
 GACHA_WEIGHTS_NORMAL = [78.5, 18.5, 2.3, 0.7]
+# 10連目の確定抽選確率 (★1の確率を★2に加算)
 GACHA_WEIGHTS_GUARANTEED = [0, 18.5 + 78.5, 2.3, 0.7]
 
 def perform_gacha_draw(guaranteed=False):
+    """
+    指定された確率でガチャを1回引く
+    :param guaranteed: Trueの場合、10連目用の確定確率を使用する
+    :return: 当選したスタンプの文字列
+    """
     weights = GACHA_WEIGHTS_GUARANTEED if guaranteed else GACHA_WEIGHTS_NORMAL
+    # 確率に基づいてレアリティのカテゴリを選択
     chosen_category = random.choices(GACHA_ITEMS, weights=weights, k=1)[0]
+    # 選択されたカテゴリの中からランダムに1つのスタンプを選択
     return random.choice(chosen_category)
 
 async def send_gacha_results(message):
+    """ガチャを10回実行し、結果を送信する"""
     results = []
+    # 1〜9回目は通常の確率で抽選
     for _ in range(9):
         results.append(perform_gacha_draw())
+    
+    # 10回目は★2以上確定の確率で抽選
     results.append(perform_gacha_draw(guaranteed=True))
+    
+    # 結果を整形して送信
     await message.channel.send(" ".join(results))
 
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# ガチャ機能の追加ここまで
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+
 def get_random_shot():
+    """インデントエラーを修正"""
     game = random.choice(SHOT_TYPE)
     return random.choice(game[1:])
 
@@ -70,7 +100,6 @@ def get_random_shot():
 # -----------------------------------------------------------------------------
 @client.event
 async def on_ready():
-    # ★ logger.infoからprintに変更
     print(f'Bot準備完了～ Logged in as {client.user}')
     game = discord.Game("説明！ で説明だすよ")
     await client.change_presence(status=discord.Status.online, activity=game)
@@ -79,15 +108,14 @@ async def on_ready():
 async def on_message(message):
     if message.author == client.user or message.author.bot:
         return
-
-    # ★ logger.infoからprintに変更
-    print(f"受信: [サーバー: {message.guild.name}] [チャンネル: {message.channel.name}] [ユーザー: {message.author.name}] - {message.content}")
-
-    # (メッセージへの応答処理は変更なし)
+        
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    # ガチャのトリガーを追加
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
     if GACHA_TRIGGER in message.content:
         await send_gacha_results(message)
         return
-    # ... (省略) ...
+        
     if (client.user.mentioned_in(message) or any(keyword in message.content for keyword in ["本日の機体", "今日の機体", "きょうのきたい", "ほんじつのきたい", "イッツルナティックターイム！"])):
         await message.channel.send(get_random_shot())
         return
@@ -104,6 +132,7 @@ async def on_message(message):
         await message.channel.send("今日の機体、本日の機体 またはメンションで機体出します")
         return
     if any(keyword in message.content for keyword in ["ソースコード", "そーす"]):
+        # ↓↓↓ あなたのGitHubリポジトリのURLに書き換えてください
         await message.channel.send("https://github.com/Kakeyouyou33554432/dis_test")
         return
     if any(keyword in message.content for keyword in ["スタンプ", "すたんぷ"]):
@@ -119,22 +148,27 @@ async def on_message(message):
 def run_bot():
     bot_token = os.environ.get("DISCORD_BOT_TOKEN")
     if not bot_token:
-        # ★ logger.errorからprintに変更
-        print("エラー: DISCORD_BOT_TOKENが設定されていません。")
+        print("DISCORD_BOT_TOKENが設定されていません。")
         return
 
+    # asyncioのイベントループを適切に設定
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
     
+    # client.start()をタスクとして実行
     loop.create_task(client.start(bot_token))
     
+    # イベントループを実行し続ける
     if not loop.is_running():
         loop.run_forever()
 
 
+# Discordボットを別のスレッドで起動する
+# Gunicornがこのファイルをインポートして`app`を起動した際に、
+# このスレッドも開始される
 bot_thread = threading.Thread(target=run_bot)
 bot_thread.daemon = True
 bot_thread.start()
