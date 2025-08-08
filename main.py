@@ -43,6 +43,53 @@ STICKER = (
     "<:chiaki:1318964308628996106>",
 )
 
+# -----------------------------------------------------------------------------
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# ここからガチャ機能の追加
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+GACHA_TRIGGER = "<:img:1332781427498029106:>"
+
+# ガチャ用のスタンプを定義
+GACHA_STAR_1 = ("<:JYUNYA:921397676166234162:>", "<:maiahi:1385967824173924354:>", "<:emoji_33:901741259260039239:>")
+GACHA_STAR_2 = ("<:beerjunya:859283357841489950:>",)
+GACHA_STAR_3 = ("<:rainbowjunya2:930782219490983937:>",)
+
+# 各レアリティの抽選アイテムリスト
+GACHA_ITEMS = [GACHA_STAR_1, GACHA_STAR_2, GACHA_STAR_3, STICKER]
+# 通常の抽選確率
+GACHA_WEIGHTS_NORMAL = [78.5, 18.5, 2.3, 0.7]
+# 10連目の確定抽選確率 (★1の確率を★2に加算)
+GACHA_WEIGHTS_GUARANTEED = [0, 18.5 + 78.5, 2.3, 0.7]
+
+def perform_gacha_draw(guaranteed=False):
+    """
+    指定された確率でガチャを1回引く
+    :param guaranteed: Trueの場合、10連目用の確定確率を使用する
+    :return: 当選したスタンプの文字列
+    """
+    weights = GACHA_WEIGHTS_GUARANTEED if guaranteed else GACHA_WEIGHTS_NORMAL
+    # 確率に基づいてレアリティのカテゴリを選択
+    chosen_category = random.choices(GACHA_ITEMS, weights=weights, k=1)[0]
+    # 選択されたカテゴリの中からランダムに1つのスタンプを選択
+    return random.choice(chosen_category)
+
+async def send_gacha_results(message):
+    """ガチャを10回実行し、結果を送信する"""
+    results = []
+    # 1〜9回目は通常の確率で抽選
+    for _ in range(9):
+        results.append(perform_gacha_draw())
+    
+    # 10回目は★2以上確定の確率で抽選
+    results.append(perform_gacha_draw(guaranteed=True))
+    
+    # 結果を整形して送信
+    await message.channel.send(" ".join(results))
+
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# ガチャ機能の追加ここまで
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+
 def get_random_shot():
     """インデントエラーを修正"""
     game = random.choice(SHOT_TYPE)
@@ -61,6 +108,14 @@ async def on_ready():
 async def on_message(message):
     if message.author == client.user or message.author.bot:
         return
+        
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    # ガチャのトリガーを追加
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    if GACHA_TRIGGER in message.content:
+        await send_gacha_results(message)
+        return
+        
     if (client.user.mentioned_in(message) or any(keyword in message.content for keyword in ["本日の機体", "今日の機体", "きょうのきたい", "ほんじつのきたい", "イッツルナティックターイム！"])):
         await message.channel.send(get_random_shot())
         return
