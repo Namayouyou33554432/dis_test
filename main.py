@@ -6,16 +6,22 @@ import threading
 import asyncio
 
 # -----------------------------------------------------------------------------
-# Flask (Webサーバー)
+# Flask (Render用Webサーバー)
 # -----------------------------------------------------------------------------
 app = Flask(__name__)
 
 @app.route('/')
 def hello():
+    """Renderが正常に起動しているか確認するためのルート"""
     return "Discord Bot is active now"
 
+def run_web():
+    """Flaskサーバーを別スレッドで起動"""
+    port = int(os.environ.get("PORT", 10000))  # Renderが割り当てるポートを使用
+    app.run(host="0.0.0.0", port=port)
+
 # -----------------------------------------------------------------------------
-# Discordボット
+# Discordボットの設定
 # -----------------------------------------------------------------------------
 intents = discord.Intents.default()
 intents.message_content = True
@@ -35,6 +41,7 @@ SHOT_TYPE = (
     (9, "霊夢W", "霊夢E", "霊夢O", "魔理沙W", "魔理沙E", "魔理沙O", "妖夢W", "妖夢E", "妖夢O"),
     (4, "虹霊夢", "虹魔理沙", "虹咲夜", "虹早苗"),
 )
+
 STICKER = (
     "<:kazusa:1318960518215766117>", "<:plana1:1318960569822351370>", "<:plana:1318960622268059728>",
     "<:nyny:1318960704249663498>", "<:plana2:1318964188537815150>", "<:usio:1318964272038019132>",
@@ -45,6 +52,9 @@ def get_random_shot():
     game = random.choice(SHOT_TYPE)
     return random.choice(game[1:])
 
+# -----------------------------------------------------------------------------
+# Discordイベント
+# -----------------------------------------------------------------------------
 @client.event
 async def on_ready():
     print(f'Bot準備完了～ Logged in as {client.user}')
@@ -81,7 +91,7 @@ async def on_message(message):
         return
 
 # -----------------------------------------------------------------------------
-# Discordボットを別スレッドで起動
+# 並列起動
 # -----------------------------------------------------------------------------
 def run_bot():
     bot_token = os.environ.get("DISCORD_BOT_TOKEN")
@@ -92,10 +102,7 @@ def run_bot():
     asyncio.set_event_loop(loop)
     loop.run_until_complete(client.start(bot_token))
 
-bot_thread = threading.Thread(target=run_bot)
-bot_thread.daemon = True
-bot_thread.start()
-
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    # FlaskサーバーとDiscord Botを並行して動かす
+    threading.Thread(target=run_web).start()
+    run_bot()
