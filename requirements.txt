@@ -2,5 +2,3 @@ flask
 discord.py
 gunicorn
 aiohttp
-brotli
-pixivpy
