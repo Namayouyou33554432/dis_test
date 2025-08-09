@@ -1,5 +1,4 @@
 flask
 discord.py
 gunicorn
-yt-dlp
 aiohttp
