@@ -59,7 +59,7 @@ GACHA_WEIGHTS_GUARANTEED = [0, 18.5 + 78.5, 2.3, 0.7]
 
 
 # -----------------------------------------------------------------------------
-# 画像ダウンロード機能 (★★★★★ ダウンロード形式に戻した最終版 ★★★★★)
+# 画像ダウンロード機能 (★★★★★ デバッグ強化版 ★★★★★)
 # -----------------------------------------------------------------------------
 async def process_media_link(message, url_type):
     mirror_url = None
@@ -100,6 +100,8 @@ async def process_media_link(message, url_type):
                             media_list = data.get('tweet', {}).get('media', {}).get('all', [])
                             for media in media_list:
                                 image_urls.append(media['url'])
+                        else:
+                            print(f"Twitter API Error: Status {resp.status}")
                 
                 elif url_type == 'pixiv':
                     for i in range(1, 21):
@@ -107,21 +109,33 @@ async def process_media_link(message, url_type):
                         for ext in ['.jpg', '.png', '.gif']:
                             img_url = f"https://pxiv.cat/{artwork_id}-{i}{ext}"
                             try:
-                                async with session.head(img_url, timeout=10) as img_resp:
+                                # allow_redirects=True を追加してリダイレクトに対応
+                                async with session.head(img_url, timeout=10, allow_redirects=True) as img_resp:
+                                    print(f"Checking {img_url}... Status: {img_resp.status}") # デバッグ用にステータスを出力
                                     if img_resp.status == 200:
-                                        image_urls.append(img_url)
+                                        # リダイレクト後の最終的なURLを使用する
+                                        final_url = str(img_resp.url)
+                                        image_urls.append(final_url)
                                         found_image_for_this_page = True
+                                        print(f"Found: {final_url}") # デバッグ用に発見したURLを出力
                                         break
-                            except Exception: pass
-                        if not found_image_for_this_page: break
+                            except asyncio.TimeoutError:
+                                print(f"Timeout checking {img_url}")
+                            except Exception as e:
+                                # エラー内容をログに出力して問題を特定しやすくする
+                                print(f"Error checking {img_url}: {type(e).__name__} - {e}")
+                        
+                        if not found_image_for_this_page:
+                            # このページで見つからなければループを抜ける
+                            print(f"No image found for page {i}, stopping.")
+                            break
 
             if not image_urls:
-                await message.channel.send("画像が見つかりませんでした。")
+                await message.channel.send("このリンクからは画像を見つけられませんでした。")
                 return
 
             # --- 画像をダウンロードして送信 ---
-            # Discordの無料プランのファイルサイズ上限は25MBですが、余裕をもって24MBに設定
-            MAX_FILE_SIZE = 24 * 1024 * 1024 
+            MAX_FILE_SIZE = 24 * 1024 * 1024 # 24MB
 
             for i, img_url in enumerate(image_urls):
                 try:
@@ -137,7 +151,7 @@ async def process_media_link(message, url_type):
                             picture = discord.File(io.BytesIO(image_data), filename=filename)
                             await message.channel.send(file=picture)
                         else:
-                            await message.channel.send(f"画像 {i+1} のダウンロードに失敗しました。 (ステータスコード: {img_resp.status})")
+                            await message.channel.send(f"画像 {i+1} のダウンロードに失敗しました。 (URL: <{img_url}>, Status: {img_resp.status})")
                 except Exception as dl_error:
                     await message.channel.send(f"画像 {i+1} の処理中にエラーが発生しました: `{dl_error}`")
 
