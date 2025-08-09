@@ -8,6 +8,7 @@ import re
 import io
 import json
 import aiohttp
+import traceback
 
 # -----------------------------------------------------------------------------
 # Flask (Render用Webサーバー)
@@ -26,6 +27,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
+# (SHOT_TYPE, STICKER, GACHA_* 定数は変更ないため省略)
 SHOT_TYPE = (
     (4, "紅霊夢A", "紅霊夢B", "紅魔理沙A", "紅魔理沙B"),
     (6, "妖霊夢A", "妖霊夢B", "妖魔理沙A", "妖魔理沙B", "妖咲夜A", "妖咲夜B"),
@@ -55,8 +57,9 @@ GACHA_ITEMS = [GACHA_STAR_1, GACHA_STAR_2, GACHA_STAR_3, STICKER]
 GACHA_WEIGHTS_NORMAL = [78.5, 18.5, 2.3, 0.7]
 GACHA_WEIGHTS_GUARANTEED = [0, 18.5 + 78.5, 2.3, 0.7]
 
+
 # -----------------------------------------------------------------------------
-# 画像ダウンロード機能
+# 画像ダウンロード機能 (★★★★★ ダウンロード形式に戻した最終版 ★★★★★)
 # -----------------------------------------------------------------------------
 async def process_media_link(message, url_type):
     mirror_url = None
@@ -69,101 +72,81 @@ async def process_media_link(message, url_type):
         status_part = match.group(1)
         mirror_url = f"https://vxtwitter.com/{status_part}"
         api_url = f"https://api.fxtwitter.com/{status_part}"
+        await message.channel.send(mirror_url)
 
     elif url_type == 'pixiv':
         match = re.search(r'https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/(\d+)', message.content)
         if not match: return
         artwork_id = match.group(1)
         mirror_url = f"https://www.phixiv.net/artworks/{artwork_id}"
-        api_url = f"https://api.pixiv.pics/v2/illust/{artwork_id}"
-
-    await message.channel.send(mirror_url)
+        await message.channel.send(mirror_url)
+    else:
+        return
 
     async with message.channel.typing():
         try:
             image_urls = []
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+                'Referer': 'https://www.pixiv.net/'
             }
             
             async with aiohttp.ClientSession(headers=headers) as session:
+                # --- 画像URLのリストを作成 ---
                 if url_type == 'twitter':
                     async with session.get(api_url) as resp:
-                        if resp.status != 200: return
-                        data = await resp.json()
-                        media_list = data.get('tweet', {}).get('media', {}).get('all', [])
-                        for media in media_list:
-                            image_urls.append(media['url'])
+                        if resp.status == 200:
+                            data = await resp.json()
+                            media_list = data.get('tweet', {}).get('media', {}).get('all', [])
+                            for media in media_list:
+                                image_urls.append(media['url'])
                 
                 elif url_type == 'pixiv':
-                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-                    # APIからの情報取得を試み、失敗した場合はpxiv.catにフォールバックする
-                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-                    try:
-                        async with session.get(api_url) as resp:
-                            if resp.status != 200:
-                                await message.channel.send(f"APIへのアクセスに失敗しました。(ステータスコード: {resp.status})")
-                            
-                            # ContentTypeをチェックし、JSONでなければログに出力
-                            content_type = resp.headers.get('Content-Type', '')
-                            if 'application/json' not in content_type:
-                                response_text = await resp.text()
-                                print("--- API ERROR: RESPONSE IS NOT JSON ---")
-                                print(f"Content-Type: {content_type}")
-                                print(f"Response Body: {response_text}")
-                                print("------------------------------------")
-                                raise aiohttp.ContentTypeError(None, None) # エラーを発生させてフォールバック処理へ
-
-                            data = await resp.json()
-                            urls = data.get('illust', {}).get('urls', [])
-                            for url_info in urls:
-                                image_urls.append(url_info.get('original'))
-                    except (aiohttp.ContentTypeError, json.JSONDecodeError):
-                        print("APIからのJSON取得に失敗。pxiv.catからの直接ダウンロードにフォールバックします。")
-                        found_any_image = False
-                        download_headers = {'Referer': 'https://www.pixiv.net/'}
-                        for i in range(1, 21):
-                            found_image_for_this_page = False
-                            for ext in ['.jpg', '.png', '.gif']:
-                                img_url = f"https://pxiv.cat/{artwork_id}-{i}{ext}"
-                                try:
-                                    async with session.get(img_url, headers=download_headers, timeout=15) as img_resp:
-                                        if img_resp.status == 200:
-                                            image_urls.append(img_url)
-                                            found_any_image = True
-                                            found_image_for_this_page = True
-                                            break
-                                except Exception:
-                                    pass
-                            if not found_image_for_this_page:
-                                break
-                        if not found_any_image:
-                             await message.channel.send("APIからの情報取得に失敗し、代替手段でも画像を見つけられませんでした。")
-                             return
+                    for i in range(1, 21):
+                        found_image_for_this_page = False
+                        for ext in ['.jpg', '.png', '.gif']:
+                            img_url = f"https://pxiv.cat/{artwork_id}-{i}{ext}"
+                            try:
+                                async with session.head(img_url, timeout=10) as img_resp:
+                                    if img_resp.status == 200:
+                                        image_urls.append(img_url)
+                                        found_image_for_this_page = True
+                                        break
+                            except Exception: pass
+                        if not found_image_for_this_page: break
 
             if not image_urls:
                 await message.channel.send("画像が見つかりませんでした。")
                 return
 
-            download_headers = {'Referer': 'https://www.pixiv.net/'}
+            # --- 画像をダウンロードして送信 ---
+            # Discordの無料プランのファイルサイズ上限は25MBですが、余裕をもって24MBに設定
+            MAX_FILE_SIZE = 24 * 1024 * 1024 
+
             for i, img_url in enumerate(image_urls):
-                if not img_url: continue
-                async with session.get(img_url, headers=download_headers) as img_resp:
-                    if img_resp.status == 200:
-                        image_data = await img_resp.read()
-                        if len(image_data) > 8 * 1024 * 1024:
-                            await message.channel.send(f"画像 {i+1} は8MBを超えているため、送信できません。")
-                            continue
-                        
-                        filename = os.path.basename(img_url.split('?')[0])
-                        picture = discord.File(io.BytesIO(image_data), filename=filename)
-                        await message.channel.send(file=picture)
-                    else:
-                        await message.channel.send(f"画像 {i+1} のダウンロードに失敗しました。 (ステータスコード: {img_resp.status})")
+                try:
+                    async with session.get(img_url) as img_resp:
+                        if img_resp.status == 200:
+                            image_data = await img_resp.read()
+                            
+                            if len(image_data) > MAX_FILE_SIZE:
+                                await message.channel.send(f"画像 {i+1} はサイズが大きすぎるため、送信できません。({len(image_data) / 1024 / 1024:.2f}MB)")
+                                continue
+                            
+                            filename = os.path.basename(img_url.split('?')[0])
+                            picture = discord.File(io.BytesIO(image_data), filename=filename)
+                            await message.channel.send(file=picture)
+                        else:
+                            await message.channel.send(f"画像 {i+1} のダウンロードに失敗しました。 (ステータスコード: {img_resp.status})")
+                except Exception as dl_error:
+                    await message.channel.send(f"画像 {i+1} の処理中にエラーが発生しました: `{dl_error}`")
+
 
         except Exception as e:
             print(f"予期せぬエラーが発生しました: {e}")
+            traceback.print_exc()
             await message.channel.send(f"予期せぬエラーが発生しました: `{type(e).__name__}`")
+
 
 def perform_gacha_draw(guaranteed=False):
     weights = GACHA_WEIGHTS_GUARANTEED if guaranteed else GACHA_WEIGHTS_NORMAL
@@ -252,3 +235,6 @@ def run_bot():
 bot_thread = threading.Thread(target=run_bot)
 bot_thread.daemon = True
 bot_thread.start()
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
