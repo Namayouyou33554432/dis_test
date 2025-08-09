@@ -2,4 +2,3 @@ flask
 discord.py
 gunicorn
 aiohttp
-pixivpy-async
