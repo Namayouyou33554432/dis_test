@@ -8,7 +8,6 @@ import re
 import io
 import json
 import aiohttp
-from pixivpy_async import AppPixivAPI # ★ 新しい非同期ライブラリをインポート
 
 # -----------------------------------------------------------------------------
 # Flask (Render用Webサーバー)
@@ -26,9 +25,6 @@ def hello():
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
-
-# ★ Pixiv APIクライアントをグローバルに定義
-pixiv_api = AppPixivAPI()
 
 SHOT_TYPE = (
     (4, "紅霊夢A", "紅霊夢B", "紅魔理沙A", "紅魔理沙B"),
@@ -65,7 +61,6 @@ GACHA_WEIGHTS_GUARANTEED = [0, 18.5 + 78.5, 2.3, 0.7]
 async def process_media_link(message, url_type):
     mirror_url = None
     api_url = None
-    artwork_id = None
     
     if url_type == 'twitter':
         match = re.search(r'https?://(?:www\.)?(?:x|twitter)\.com/(\w+/status/\d+)', message.content)
@@ -77,50 +72,45 @@ async def process_media_link(message, url_type):
     elif url_type == 'pixiv':
         match = re.search(r'https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/(\d+)', message.content)
         if not match: return
-        artwork_id = int(match.group(1)) # IDを整数に変換
+        artwork_id = match.group(1)
         mirror_url = f"https://www.phixiv.net/artworks/{artwork_id}"
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+        # Pixivの処理を安定した専用API(api.phixiv.net)を使う方式に変更
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+        api_url = f"https://api.phixiv.net/api/illust?id={artwork_id}"
 
     await message.channel.send(mirror_url)
 
     async with message.channel.typing():
         try:
             image_urls = []
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
+            }
             
-            if url_type == 'twitter':
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(api_url) as resp:
-                        if resp.status != 200: return
-                        data = await resp.json()
-                        media_list = data.get('tweet', {}).get('media', {}).get('all', [])
-                        for media in media_list:
-                            image_urls.append(media['url'])
-
-            elif url_type == 'pixiv':
-                # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-                # Pixiv公式API(pixivpy-async)を使用する方式に変更
-                # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-                try:
-                    json_result = await pixiv_api.illust_detail(artwork_id)
-                    if json_result.get('error'):
-                        await message.channel.send(f"Pixiv APIエラー: {json_result['error']['message']}")
+            async with aiohttp.ClientSession(headers=headers) as session:
+                async with session.get(api_url) as resp:
+                    if resp.status != 200:
+                        await message.channel.send(f"APIへのアクセスに失敗しました。(ステータスコード: {resp.status})")
                         return
-                    
-                    illust = json_result.illust
-                    if illust.page_count == 1:
-                        image_urls.append(illust.meta_single_page.original_image_url)
-                    else:
-                        for page in illust.meta_pages:
-                            image_urls.append(page.image_urls.original)
-                except Exception as e:
-                    await message.channel.send(f"Pixiv APIの処理中にエラーが発生しました: `{e}`")
+                    data = await resp.json()
+
+                if url_type == 'twitter':
+                    media_list = data.get('tweet', {}).get('media', {}).get('all', [])
+                    for media in media_list:
+                        image_urls.append(media['url'])
+                
+                elif url_type == 'pixiv':
+                    # api.phixiv.netのレスポンスからURLを取得
+                    images = data.get('image_proxy_urls', [])
+                    for img_info in images:
+                        image_urls.append(img_info.get('original'))
+
+                if not image_urls:
+                    await message.channel.send("画像が見つかりませんでした。")
                     return
 
-            if not image_urls:
-                await message.channel.send("画像が見つかりませんでした。")
-                return
-
-            download_headers = {'Referer': 'https://www.pixiv.net/'}
-            async with aiohttp.ClientSession() as session:
+                download_headers = {'Referer': 'https://www.pixiv.net/'}
                 for i, img_url in enumerate(image_urls):
                     if not img_url: continue
                     async with session.get(img_url, headers=download_headers) as img_resp:
@@ -206,34 +196,24 @@ async def on_message(message):
 # -----------------------------------------------------------------------------
 # 並列起動
 # -----------------------------------------------------------------------------
-async def login_pixiv_and_start_bot():
-    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-    # ボット起動時にPixiv APIにログインする処理
-    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-    pixiv_refresh_token = os.environ.get("PIXIV_REFRESH_TOKEN")
-    if not pixiv_refresh_token:
-        print("エラー: PIXIV_REFRESH_TOKENが設定されていません。Pixiv機能は利用できません。")
-    else:
-        try:
-            await pixiv_api.login(refresh_token=pixiv_refresh_token)
-            print("Pixiv APIに正常にログインしました。")
-        except Exception as e:
-            print(f"Pixiv APIへのログインに失敗しました: {e}")
-
-    # Discordボットを起動
+def run_bot():
     bot_token = os.environ.get("DISCORD_BOT_TOKEN")
     if not bot_token:
         print("DISCORD_BOT_TOKENが設定されていません。")
         return
-    await client.start(bot_token)
 
-def run_bot_wrapper():
-    # 新しいイベントループを作成して実行
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(login_pixiv_and_start_bot())
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    
+    loop.create_task(client.start(bot_token))
+    
+    if not loop.is_running():
+        loop.run_forever()
 
-# スレッドでボットを起動
-bot_thread = threading.Thread(target=run_bot_wrapper)
+
+bot_thread = threading.Thread(target=run_bot)
 bot_thread.daemon = True
-bot_thread.start
+bot_thread.start()
