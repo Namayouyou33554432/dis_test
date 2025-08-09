@@ -80,47 +80,64 @@ async def process_media_link(message, url_type):
     async with message.channel.typing():
         try:
             image_urls = []
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
+            
+            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+            # 最終解決策：本物のブラウザを装うためのヘッダー情報
+            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+            request_headers = {
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
+                'Sec-Ch-Ua': '"Not/A)Brand";v="99", "Google Chrome";v="115", "Chromium";v="115"',
+                'Sec-Ch-Ua-Mobile': '?0',
+                'Sec-Ch-Ua-Platform': '"Windows"',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-User': '?1',
+                'Upgrade-Insecure-Requests': '1',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
             }
-            async with aiohttp.ClientSession(headers=headers) as session:
+            
+            async with aiohttp.ClientSession() as session:
                 if url_type == 'twitter':
-                    async with session.get(api_url) as resp:
-                        if resp.status != 200: return
+                    async with session.get(api_url, headers=request_headers) as resp:
+                        if resp.status != 200:
+                            await message.channel.send("fxtwitter APIへのアクセスに失敗しました。")
+                            return
                         data = await resp.json()
                         media_list = data.get('tweet', {}).get('media', {}).get('all', [])
                         for media in media_list:
                             image_urls.append(media['url'])
 
                 elif url_type == 'pixiv':
-                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-                    # pxiv.catで複数のファイル形式を試す方式に変更
-                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-                    for i in range(1, 21): # 最大20枚まで試す
-                        found_image_for_page = False
-                        for ext in ['.jpg', '.png', '.gif']: # 試すファイル形式
-                            img_url = f"https://pxiv.cat/{artwork_id}-{i}{ext}"
-                            try:
-                                async with session.head(img_url, allow_redirects=True) as head_resp:
-                                    if head_resp.status == 200:
-                                        image_urls.append(str(head_resp.url))
-                                        found_image_for_page = True
-                                        break # このページの画像が見つかったので、次のページへ
-                            except Exception:
-                                # 接続エラーなど
-                                continue
-                        
-                        if not found_image_for_page:
-                            # このページ番号の画像がどの形式でも見つからなければ終了
-                            break
+                    async with session.get(mirror_url, headers=request_headers) as resp:
+                        if resp.status != 200:
+                            print(f"phixiv.netへのアクセスに失敗しました。 Status: {resp.status}")
+                            await message.channel.send("phixiv.netへのアクセスに失敗しました。")
+                            return
+                        html = await resp.text()
+                    
+                    json_match = re.search(r'<script id="application/json">([\s\S]+?)</script>', html)
+                    if not json_match:
+                        await message.channel.send("phixiv.netから画像情報を見つけられませんでした。")
+                        return
+                    
+                    data = json.loads(json_match.group(1))
+                    images = data.get('post', {}).get('images', [])
+                    for img_info in images:
+                        image_urls.append(img_info.get('urls', {}).get('original'))
 
                 if not image_urls:
                     await message.channel.send("画像が見つかりませんでした。")
                     return
+                
+                # 画像ダウンロード用のリファラーヘッダー
+                download_headers = {'Referer': 'https://www.pixiv.net/'}
 
                 for i, img_url in enumerate(image_urls):
                     if not img_url: continue
-                    async with session.get(img_url) as img_resp:
+                    async with session.get(img_url, headers=download_headers) as img_resp:
                         if img_resp.status == 200:
                             image_data = await img_resp.read()
                             if len(image_data) > 8 * 1024 * 1024:
@@ -131,7 +148,7 @@ async def process_media_link(message, url_type):
                             picture = discord.File(io.BytesIO(image_data), filename=filename)
                             await message.channel.send(file=picture)
                         else:
-                            print(f"画像 {i+1} のダウンロードに失敗しました。 (URL: {img_url}, Status: {img_resp.status})")
+                            await message.channel.send(f"画像 {i+1} のダウンロードに失敗しました。 (Status: {img_resp.status})")
 
         except Exception as e:
             print(f"An error occurred during media processing: {e}")
