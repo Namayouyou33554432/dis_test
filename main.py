@@ -74,9 +74,6 @@ async def process_media_link(message, url_type):
         if not match: return
         artwork_id = match.group(1)
         mirror_url = f"https://www.phixiv.net/artworks/{artwork_id}"
-        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-        # APIのURLをご提案通りに差し替え
-        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
         api_url = f"https://www.phixiv.net/api/info?id={artwork_id}"
 
     await message.channel.send(mirror_url)
@@ -101,10 +98,10 @@ async def process_media_link(message, url_type):
                         image_urls.append(media['url'])
                 
                 elif url_type == 'pixiv':
-                    # 新しいAPIのレスポンス構造に合わせて画像URLを取得
-                    images = data.get('image_proxy_urls', [])
-                    for img_info in images:
-                        image_urls.append(img_info.get('original'))
+                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                    # 新しいAPIのレスポンス構造に合わせて画像URLを取得するように修正
+                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                    image_urls = data.get('image_urls', [])
 
                 if not image_urls:
                     await message.channel.send("画像が見つかりませんでした。")
