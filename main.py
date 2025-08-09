@@ -8,6 +8,7 @@ import re
 import io
 import json
 import aiohttp
+from urllib.parse import quote # ★ APIでURLを安全に扱うために追加
 
 # -----------------------------------------------------------------------------
 # Flask (Render用Webサーバー)
@@ -59,13 +60,14 @@ GACHA_WEIGHTS_GUARANTEED = [0, 18.5 + 78.5, 2.3, 0.7]
 # 画像ダウンロード機能
 # -----------------------------------------------------------------------------
 async def process_media_link(message, url_type):
+    original_url = None
     mirror_url = None
     api_url = None
-    artwork_id = None
     
     if url_type == 'twitter':
         match = re.search(r'https?://(?:www\.)?(?:x|twitter)\.com/(\w+/status/\d+)', message.content)
         if not match: return
+        original_url = match.group(0)
         status_part = match.group(1)
         mirror_url = f"https://vxtwitter.com/{status_part}"
         api_url = f"https://api.fxtwitter.com/{status_part}"
@@ -73,53 +75,45 @@ async def process_media_link(message, url_type):
     elif url_type == 'pixiv':
         match = re.search(r'https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/(\d+)', message.content)
         if not match: return
+        original_url = match.group(0)
         artwork_id = match.group(1)
         mirror_url = f"https://www.phixiv.net/artworks/{artwork_id}"
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+        # Pixivの処理を専用API(api.pixiv.cat)を使う方式に変更
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+        encoded_url = quote(original_url, safe='')
+        api_url = f"https://api.pixiv.cat/v1/generate?url={encoded_url}"
 
     await message.channel.send(mirror_url)
 
     async with message.channel.typing():
         try:
             image_urls = []
-            
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-                'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
             }
             
             async with aiohttp.ClientSession(headers=headers) as session:
-                if url_type == 'twitter':
-                    async with session.get(api_url) as resp:
-                        if resp.status != 200: return
-                        data = await resp.json()
-                        media_list = data.get('tweet', {}).get('media', {}).get('all', [])
-                        for media in media_list:
-                            image_urls.append(media['url'])
+                if not api_url:
+                    await message.channel.send("APIのURL生成に失敗しました。")
+                    return
 
+                async with session.get(api_url) as resp:
+                    if resp.status != 200:
+                        await message.channel.send(f"APIへのアクセスに失敗しました。(ステータスコード: {resp.status})")
+                        return
+                    data = await resp.json()
+
+                if url_type == 'twitter':
+                    media_list = data.get('tweet', {}).get('media', {}).get('all', [])
+                    for media in media_list:
+                        image_urls.append(media['url'])
+                
                 elif url_type == 'pixiv':
-                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-                    # pxiv.catで複数のファイル形式を試す最終方式
-                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-                    for i in range(1, 21): # 最大20枚まで試す
-                        found_image_for_page = False
-                        for ext in ['.jpg', '.png', '.gif']: # 試すファイル形式
-                            img_url = f"https://pxiv.cat/{artwork_id}-{i}{ext}"
-                            try:
-                                async with session.head(img_url, allow_redirects=True, timeout=10) as head_resp:
-                                    if head_resp.status == 200:
-                                        image_urls.append(str(head_resp.url))
-                                        found_image_for_page = True
-                                        break
-                            except Exception as e:
-                                print(f"pxiv.catへの接続エラー: {e}")
-                                continue
-                        
-                        if not found_image_for_page:
-                            break
+                    # api.pixiv.catのレスポンスからURLを取得
+                    urls = data.get('urls', [])
+                    for url_info in urls:
+                        image_urls.append(url_info)
 
                 if not image_urls:
                     await message.channel.send("画像が見つかりませんでした。")
@@ -139,7 +133,7 @@ async def process_media_link(message, url_type):
                             picture = discord.File(io.BytesIO(image_data), filename=filename)
                             await message.channel.send(file=picture)
                         else:
-                            print(f"画像 {i+1} のダウンロードに失敗しました。 (URL: {img_url}, Status: {img_resp.status})")
+                            await message.channel.send(f"画像 {i+1} のダウンロードに失敗しました。 (ステータスコード: {img_resp.status})")
 
         except Exception as e:
             print(f"予期せぬエラーが発生しました: {e}")
