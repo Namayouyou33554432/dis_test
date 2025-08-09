@@ -26,8 +26,6 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-# (SHOT_TYPE, STICKER, GACHA関連の定義は変更なし)
-# ... (省略) ...
 SHOT_TYPE = (
     (4, "紅霊夢A", "紅霊夢B", "紅魔理沙A", "紅魔理沙B"),
     (6, "妖霊夢A", "妖霊夢B", "妖魔理沙A", "妖魔理沙B", "妖咲夜A", "妖咲夜B"),
@@ -58,89 +56,96 @@ GACHA_WEIGHTS_NORMAL = [78.5, 18.5, 2.3, 0.7]
 GACHA_WEIGHTS_GUARANTEED = [0, 18.5 + 78.5, 2.3, 0.7]
 
 # -----------------------------------------------------------------------------
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-# ここから画像ダウンロード機能の追加
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# 画像ダウンロード機能
+# -----------------------------------------------------------------------------
 async def process_media_link(message, url_type):
     """
     メッセージからURLを抽出し、ミラーリングと画像ダウンロードを行う
     """
-    original_url = None
-    # メッセージから正規表現でURLを抽出
-    if url_type == 'twitter':
-        match = re.search(r'https?://(?:www\.)?(?:x|twitter)\.com/\w+/status/\d+', message.content)
-    elif url_type == 'pixiv':
-        match = re.search(r'https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/\d+', message.content)
+    mirror_url = None
+    api_url = None
     
-    if not match:
-        return
+    if url_type == 'twitter':
+        # TwitterのステータスIDを抽出
+        match = re.search(r'https?://(?:www\.)?(?:x|twitter)\.com/(\w+/status/\d+)', message.content)
+        if not match: return
+        status_part = match.group(1)
+        mirror_url = f"https://vxtwitter.com/{status_part}"
+        api_url = f"https://api.fxtwitter.com/{status_part}" # fxtwitterのAPIエンドポイント
 
-    original_url = match.group(0)
+    elif url_type == 'pixiv':
+        # Pixivの作品IDを抽出
+        match = re.search(r'https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/(\d+)', message.content)
+        if not match: return
+        artwork_id = match.group(1)
+        mirror_url = f"https://www.phixiv.net/artworks/{artwork_id}"
 
     # 先にミラーサイトのリンクを送信
-    if url_type == 'twitter':
-        mirror_url = original_url.replace("x.com", "vxtwitter.com").replace("twitter.com", "vxtwitter.com")
-        await message.channel.send(mirror_url)
-    elif url_type == 'pixiv':
-        mirror_url = original_url.replace("www.pixiv.net", "www.phixiv.net")
-        await message.channel.send(mirror_url)
+    await message.channel.send(mirror_url)
 
-    # 画像処理中は「入力中...」と表示
     async with message.channel.typing():
         try:
-            # yt-dlpを使ってメディア情報をJSON形式で取得
-            proc = await asyncio.create_subprocess_shell(
-                f'yt-dlp -j "{original_url}"',
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            stdout, stderr = await proc.communicate()
+            image_urls = []
+            download_headers = {}
 
-            if proc.returncode != 0:
-                print(f"yt-dlp error: {stderr.decode()}")
-                await message.channel.send("画像の取得に失敗しました。")
-                return
+            async with aiohttp.ClientSession() as session:
+                if url_type == 'twitter':
+                    # fxtwitter APIからJSONを取得
+                    async with session.get(api_url) as resp:
+                        if resp.status != 200:
+                            await message.channel.send("fxtwitter APIへのアクセスに失敗しました。")
+                            return
+                        data = await resp.json()
+                        # 全てのメディアURLをリストに追加
+                        media_list = data.get('tweet', {}).get('media', {}).get('all', [])
+                        for media in media_list:
+                            image_urls.append(media['url'])
 
-            # yt-dlpの出力は複数行のJSONになることがある
-            for line in stdout.decode().strip().split('\n'):
-                data = json.loads(line)
-                
-                image_urls = []
-                if 'entries' in data:  # アルバムや複数枚の画像
-                    for entry in data['entries']:
-                        if 'url' in entry:
-                           image_urls.append(entry['url'])
-                elif 'url' in data:  # 1枚の画像や動画
-                    image_urls.append(data['url'])
-                
-                if not image_urls and 'thumbnails' in data: # フォールバック
-                    image_urls.append(data['thumbnails'][-1]['url'])
+                elif url_type == 'pixiv':
+                    # phixivページからHTMLを取得
+                    async with session.get(mirror_url) as resp:
+                        if resp.status != 200:
+                            await message.channel.send("phixiv.netへのアクセスに失敗しました。")
+                            return
+                        html = await resp.text()
+                    
+                    # HTML内のJSONデータを抽出
+                    json_match = re.search(r'<script id="application/json">([\s\S]+?)</script>', html)
+                    if not json_match:
+                        await message.channel.send("phixiv.netから画像情報を見つけられませんでした。")
+                        return
+                    
+                    data = json.loads(json_match.group(1))
+                    images = data.get('post', {}).get('images', [])
+                    for img_info in images:
+                        # オリジナル画質のURLを取得
+                        image_urls.append(img_info.get('urls', {}).get('original'))
+                    # Pixivからの画像ダウンロードにはリファラーが必要
+                    download_headers = {'Referer': 'https://www.pixiv.net/'}
 
-                # 各画像をダウンロードして送信
-                async with aiohttp.ClientSession() as session:
-                    for i, img_url in enumerate(image_urls):
-                        # Pixivなど、リファラーが必要なサイトに対応
-                        headers = {'Referer': 'https://www.pixiv.net/'} if url_type == 'pixiv' else {}
-                        async with session.get(img_url, headers=headers) as resp:
-                            if resp.status == 200:
-                                image_data = await resp.read()
-                                # Discordのファイルサイズ制限 (8MB) をチェック
-                                if len(image_data) > 8 * 1024 * 1024:
-                                    await message.channel.send(f"画像 {i+1} は8MBを超えているため、送信できません。")
-                                    continue
-                                
-                                filename = os.path.basename(img_url.split('?')[0])
-                                picture = discord.File(io.BytesIO(image_data), filename=filename)
-                                await message.channel.send(file=picture)
-                            else:
-                                await message.channel.send(f"画像 {i+1} のダウンロードに失敗しました。")
+                if not image_urls:
+                    await message.channel.send("画像が見つかりませんでした。")
+                    return
+
+                # 抽出したURLから画像をダウンロードして送信
+                for i, img_url in enumerate(image_urls):
+                    if not img_url: continue
+                    async with session.get(img_url, headers=download_headers) as img_resp:
+                        if img_resp.status == 200:
+                            image_data = await img_resp.read()
+                            if len(image_data) > 8 * 1024 * 1024:
+                                await message.channel.send(f"画像 {i+1} は8MBを超えているため、送信できません。")
+                                continue
+                            
+                            filename = os.path.basename(img_url.split('?')[0])
+                            picture = discord.File(io.BytesIO(image_data), filename=filename)
+                            await message.channel.send(file=picture)
+                        else:
+                            await message.channel.send(f"画像 {i+1} のダウンロードに失敗しました。 (Status: {img_resp.status})")
+
         except Exception as e:
-            print(f"An error occurred: {e}")
+            print(f"An error occurred during media processing: {e}")
             await message.channel.send("画像の処理中にエラーが発生しました。")
-
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-# 画像ダウンロード機能の追加ここまで
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 
 def perform_gacha_draw(guaranteed=False):
     weights = GACHA_WEIGHTS_GUARANTEED if guaranteed else GACHA_WEIGHTS_NORMAL
@@ -174,13 +179,13 @@ async def on_message(message):
     if message.author == client.user or message.author.bot:
         return
         
-    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-    # Twitter/Pixivのリンク処理を新しい関数に置き換え
-    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    # Twitter/Xのリンクを処理
     if "x.com" in message.content or "twitter.com" in message.content:
+        # 画像処理は重い場合があるので、バックグラウンドタスクとして実行
         asyncio.create_task(process_media_link(message, 'twitter'))
         return 
 
+    # Pixivのリンクを処理
     if "pixiv.net" in message.content:
         asyncio.create_task(process_media_link(message, 'pixiv'))
         return
