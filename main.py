@@ -57,109 +57,112 @@ GACHA_ITEMS = [GACHA_STAR_1, GACHA_STAR_2, GACHA_STAR_3, STICKER]
 GACHA_WEIGHTS_NORMAL = [78.5, 18.5, 2.3, 0.7]
 GACHA_WEIGHTS_GUARANTEED = [0, 18.5 + 78.5, 2.3, 0.7]
 
-
 # -----------------------------------------------------------------------------
-# 画像ダウンロード機能 (★★★★★ デバッグ強化版 ★★★★★)
+# ヘルパー関数
 # -----------------------------------------------------------------------------
-async def process_media_link(message, url_type):
-    mirror_url = None
-    api_url = None
-    artwork_id = None
-    
-    if url_type == 'twitter':
-        match = re.search(r'https?://(?:www\.)?(?:x|twitter)\.com/(\w+/status/\d+)', message.content)
-        if not match: return
-        status_part = match.group(1)
-        mirror_url = f"https://vxtwitter.com/{status_part}"
-        api_url = f"https://api.fxtwitter.com/{status_part}"
-        await message.channel.send(mirror_url)
-
-    elif url_type == 'pixiv':
-        match = re.search(r'https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/(\d+)', message.content)
-        if not match: return
-        artwork_id = match.group(1)
-        mirror_url = f"https://www.phixiv.net/artworks/{artwork_id}"
-        await message.channel.send(mirror_url)
-    else:
+async def download_and_send_images(channel, image_urls):
+    """
+    URLのリストを受け取り、画像をダウンロードしてファイルとして送信する共通関数
+    """
+    if not image_urls:
+        print("download_and_send_images called with no URLs.")
         return
 
-    async with message.channel.typing():
-        try:
-            image_urls = []
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
-                'Referer': 'https://www.pixiv.net/'
-            }
-            
-            async with aiohttp.ClientSession(headers=headers) as session:
-                # --- 画像URLのリストを作成 ---
-                if url_type == 'twitter':
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
+        }
+        async with aiohttp.ClientSession(headers=headers) as session:
+            MAX_FILE_SIZE = 24 * 1024 * 1024
+            for i, img_url in enumerate(image_urls):
+                try:
+                    async with session.get(img_url) as img_resp:
+                        if img_resp.status == 200:
+                            image_data = await img_resp.read()
+                            if len(image_data) > MAX_FILE_SIZE:
+                                await channel.send(f"画像 {i+1} はサイズが大きすぎるため、送信できません。({len(image_data) / 1024 / 1024:.2f}MB)")
+                                continue
+                            filename = os.path.basename(img_url.split('?')[0])
+                            picture = discord.File(io.BytesIO(image_data), filename=filename)
+                            await channel.send(file=picture)
+                        else:
+                            await channel.send(f"画像 {i+1} のダウンロードに失敗しました。 (Status: {img_resp.status})")
+                except Exception as dl_error:
+                    await channel.send(f"画像 {i+1} の処理中にエラーが発生しました: `{dl_error}`")
+    except Exception as e:
+        print(f"画像処理中に予期せぬエラーが発生しました: {e}")
+        traceback.print_exc()
+        await channel.send(f"画像処理中に予期せぬエラーが発生しました: `{type(e).__name__}`")
+
+# -----------------------------------------------------------------------------
+# メインの処理関数
+# -----------------------------------------------------------------------------
+async def process_media_link(message, url_type):
+    image_urls = []
+    
+    try:
+        async with message.channel.typing():
+            if url_type == 'twitter':
+                match = re.search(r'https?://(?:www\.)?(?:x|twitter)\.com/(\w+/status/\d+)', message.content)
+                if not match: return
+                status_part = match.group(1)
+                mirror_url = f"https://vxtwitter.com/{status_part}"
+                api_url = f"https://api.fxtwitter.com/{status_part}"
+                await message.channel.send(mirror_url)
+                
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
+                async with aiohttp.ClientSession(headers=headers) as session:
                     async with session.get(api_url) as resp:
                         if resp.status == 200:
                             data = await resp.json()
                             media_list = data.get('tweet', {}).get('media', {}).get('all', [])
                             for media in media_list:
                                 image_urls.append(media['url'])
-                        else:
-                            print(f"Twitter API Error: Status {resp.status}")
+            
+            elif url_type == 'pixiv':
+                match = re.search(r'https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/(\d+)', message.content)
+                if not match: return
+                mirror_url = f"https://www.phixiv.net/artworks/{match.group(1)}"
                 
-                elif url_type == 'pixiv':
-                    for i in range(1, 21):
-                        found_image_for_this_page = False
-                        for ext in ['.jpg', '.png', '.gif']:
-                            img_url = f"https://pxiv.cat/{artwork_id}-{i}{ext}"
-                            try:
-                                # allow_redirects=True を追加してリダイレクトに対応
-                                async with session.head(img_url, timeout=10, allow_redirects=True) as img_resp:
-                                    print(f"Checking {img_url}... Status: {img_resp.status}") # デバッグ用にステータスを出力
-                                    if img_resp.status == 200:
-                                        # リダイレクト後の最終的なURLを使用する
-                                        final_url = str(img_resp.url)
-                                        image_urls.append(final_url)
-                                        found_image_for_this_page = True
-                                        print(f"Found: {final_url}") # デバッグ用に発見したURLを出力
-                                        break
-                            except asyncio.TimeoutError:
-                                print(f"Timeout checking {img_url}")
-                            except Exception as e:
-                                # エラー内容をログに出力して問題を特定しやすくする
-                                print(f"Error checking {img_url}: {type(e).__name__} - {e}")
-                        
-                        if not found_image_for_this_page:
-                            # このページで見つからなければループを抜ける
-                            print(f"No image found for page {i}, stopping.")
-                            break
+                sent_message = await message.channel.send(mirror_url)
+                await asyncio.sleep(3) # Discordが埋め込みを生成するのを待つ
 
-            if not image_urls:
-                await message.channel.send("このリンクからは画像を見つけられませんでした。")
-                return
-
-            # --- 画像をダウンロードして送信 ---
-            MAX_FILE_SIZE = 24 * 1024 * 1024 # 24MB
-
-            for i, img_url in enumerate(image_urls):
                 try:
-                    async with session.get(img_url) as img_resp:
-                        if img_resp.status == 200:
-                            image_data = await img_resp.read()
-                            
-                            if len(image_data) > MAX_FILE_SIZE:
-                                await message.channel.send(f"画像 {i+1} はサイズが大きすぎるため、送信できません。({len(image_data) / 1024 / 1024:.2f}MB)")
-                                continue
-                            
-                            filename = os.path.basename(img_url.split('?')[0])
-                            picture = discord.File(io.BytesIO(image_data), filename=filename)
-                            await message.channel.send(file=picture)
-                        else:
-                            await message.channel.send(f"画像 {i+1} のダウンロードに失敗しました。 (URL: <{img_url}>, Status: {img_resp.status})")
-                except Exception as dl_error:
-                    await message.channel.send(f"画像 {i+1} の処理中にエラーが発生しました: `{dl_error}`")
+                    updated_message = await message.channel.fetch_message(sent_message.id)
+                    if updated_message.embeds:
+                        for embed in updated_message.embeds:
+                            if embed.image and embed.image.url:
+                                image_urls.append(embed.image.url)
+                except Exception as e:
+                    print(f"Could not process embed for {mirror_url}: {e}")
 
+            # --- 共通のダウンロード処理 ---
+            if image_urls:
+                await download_and_send_images(message.channel, image_urls)
+            else:
+                if url_type == 'pixiv':
+                    await message.channel.send("画像の自動再送信に失敗しました。埋め込みが表示されない場合は、手動で「再送信」と返信してください。")
+                else:
+                    await message.channel.send("このリンクからは画像を見つけられませんでした。")
 
-        except Exception as e:
-            print(f"予期せぬエラーが発生しました: {e}")
-            traceback.print_exc()
-            await message.channel.send(f"予期せぬエラーが発生しました: `{type(e).__name__}`")
+    except Exception as e:
+        print(f"予期せぬエラーが発生しました: {e}")
+        traceback.print_exc()
+        await message.channel.send(f"予期せぬエラーが発生しました: `{type(e).__name__}`")
+
+async def process_embed_images(message, embeds):
+    image_urls = []
+    for embed in embeds:
+        if embed.image and embed.image.url:
+            image_urls.append(embed.image.url)
+
+    if not image_urls:
+        await message.channel.send("この埋め込みには保存できる画像が見つかりませんでした。", reference=message)
+        return
+
+    await message.channel.send(f"{len(image_urls)}件の画像を再送信します...", reference=message)
+    async with message.channel.typing():
+        await download_and_send_images(message.channel, image_urls)
 
 
 def perform_gacha_draw(guaranteed=False):
@@ -168,13 +171,9 @@ def perform_gacha_draw(guaranteed=False):
     return random.choice(chosen_category)
 
 async def send_gacha_results(message):
-    results = []
-    for _ in range(9):
-        results.append(perform_gacha_draw())
+    results = [perform_gacha_draw() for _ in range(9)]
     results.append(perform_gacha_draw(guaranteed=True))
-    line1 = " ".join(results[0:5])
-    line2 = " ".join(results[5:10])
-    await message.channel.send(f"{line1}\n{line2}")
+    await message.channel.send(f"{' '.join(results[0:5])}\n{' '.join(results[5:10])}")
 
 def get_random_shot():
     game = random.choice(SHOT_TYPE)
@@ -193,7 +192,20 @@ async def on_ready():
 async def on_message(message):
     if message.author == client.user or message.author.bot:
         return
-        
+    
+    if message.content.lower() in ["再送信", "download"]:
+        if message.reference and message.reference.message_id:
+            try:
+                referenced_message = await message.channel.fetch_message(message.reference.message_id)
+                if referenced_message.embeds:
+                    asyncio.create_task(process_embed_images(message, referenced_message.embeds))
+                    return
+            except discord.NotFound:
+                await message.channel.send("返信元のメッセージが見つかりませんでした。", reference=message)
+            except discord.Forbidden:
+                await message.channel.send("メッセージの読み取り権限がありません。", reference=message)
+            return # "再送信"コマンドの場合はここで処理を終了
+
     if "x.com" in message.content or "twitter.com" in message.content:
         asyncio.create_task(process_media_link(message, 'twitter'))
         return 
