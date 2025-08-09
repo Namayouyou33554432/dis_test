@@ -99,21 +99,15 @@ async def process_media_link(message, url_type):
                 
                 elif url_type == 'pixiv':
                     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-                    # 複数のデータ構造パターンを試し、ログにキーを出力するよう修正
+                    # ログで判明した正しいキー 'image_proxy_urls' を使うように修正
                     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-                    print(f"phixiv APIから受け取ったデータ構造のキー: {list(data.keys())}")
-                    
-                    if 'image_urls' in data and isinstance(data['image_urls'], list):
-                        # パターンA: {"image_urls": ["url1", "url2", ...]}
-                        image_urls = data['image_urls']
-                    elif 'image_proxy_urls' in data and isinstance(data['image_proxy_urls'], list):
-                        # パターンB: {"image_proxy_urls": [{"original": "url1"}, ...]}
-                        image_urls = [img.get('original') for img in data['image_proxy_urls'] if isinstance(img, dict) and img.get('original')]
-                    else:
-                        image_urls = []
+                    images = data.get('image_proxy_urls', [])
+                    for img_info in images:
+                        if isinstance(img_info, dict):
+                            image_urls.append(img_info.get('original'))
 
                 if not image_urls:
-                    await message.channel.send("画像が見つかりませんでした。(APIレスポンスの構造が未知の形式です)")
+                    await message.channel.send("画像が見つかりませんでした。")
                     return
 
                 download_headers = {'Referer': 'https://www.pixiv.net/'}
