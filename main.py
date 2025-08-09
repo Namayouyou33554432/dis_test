@@ -8,7 +8,7 @@ import re
 import io
 import json
 import aiohttp
-from urllib.parse import quote # ★ APIでURLを安全に扱うために追加
+# from urllib.parse import quote # 不要になったため削除
 
 # -----------------------------------------------------------------------------
 # Flask (Render用Webサーバー)
@@ -78,11 +78,7 @@ async def process_media_link(message, url_type):
         original_url = match.group(0)
         artwork_id = match.group(1)
         mirror_url = f"https://www.phixiv.net/artworks/{artwork_id}"
-        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-        # Pixivの処理を専用API(api.pixiv.cat)を使う方式に変更
-        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-        encoded_url = quote(original_url, safe='')
-        api_url = f"https://api.pixiv.cat/v1/generate?url={encoded_url}"
+        api_url = "https://api.pixiv.cat/v1/generate" # POSTメソッド用のAPIエンドポイント
 
     await message.channel.send(mirror_url)
 
@@ -98,22 +94,29 @@ async def process_media_link(message, url_type):
                     await message.channel.send("APIのURL生成に失敗しました。")
                     return
 
-                async with session.get(api_url) as resp:
-                    if resp.status != 200:
-                        await message.channel.send(f"APIへのアクセスに失敗しました。(ステータスコード: {resp.status})")
-                        return
-                    data = await resp.json()
-
+                # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                # APIへのアクセス方法をGETからPOSTに変更
+                # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
                 if url_type == 'twitter':
-                    media_list = data.get('tweet', {}).get('media', {}).get('all', [])
-                    for media in media_list:
-                        image_urls.append(media['url'])
-                
+                    async with session.get(api_url) as resp:
+                        if resp.status != 200:
+                            await message.channel.send(f"fxtwitter APIへのアクセスに失敗しました。(ステータスコード: {resp.status})")
+                            return
+                        data = await resp.json()
+                        media_list = data.get('tweet', {}).get('media', {}).get('all', [])
+                        for media in media_list:
+                            image_urls.append(media['url'])
+
                 elif url_type == 'pixiv':
-                    # api.pixiv.catのレスポンスからURLを取得
-                    urls = data.get('urls', [])
-                    for url_info in urls:
-                        image_urls.append(url_info)
+                    # POSTメソッドで、JSON形式でURLを送信
+                    async with session.post(api_url, json={'url': original_url}) as resp:
+                        if resp.status != 200:
+                            await message.channel.send(f"pixiv.cat APIへのアクセスに失敗しました。(ステータスコード: {resp.status})")
+                            return
+                        data = await resp.json()
+                        urls = data.get('urls', [])
+                        for url_info in urls:
+                            image_urls.append(url_info)
 
                 if not image_urls:
                     await message.channel.send("画像が見つかりませんでした。")
