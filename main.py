@@ -8,7 +8,7 @@ import re
 import io
 import json
 import aiohttp
-# from urllib.parse import quote # 不要になったため削除
+from pixivpy3 import AppPixivAPI # ★ Pixiv APIライブラリをインポート
 
 # -----------------------------------------------------------------------------
 # Flask (Render用Webサーバー)
@@ -26,6 +26,9 @@ def hello():
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
+
+# ★ Pixiv APIクライアントをグローバルに定義
+pixiv_api = AppPixivAPI()
 
 SHOT_TYPE = (
     (4, "紅霊夢A", "紅霊夢B", "紅魔理沙A", "紅魔理沙B"),
@@ -60,14 +63,13 @@ GACHA_WEIGHTS_GUARANTEED = [0, 18.5 + 78.5, 2.3, 0.7]
 # 画像ダウンロード機能
 # -----------------------------------------------------------------------------
 async def process_media_link(message, url_type):
-    original_url = None
     mirror_url = None
     api_url = None
+    artwork_id = None
     
     if url_type == 'twitter':
         match = re.search(r'https?://(?:www\.)?(?:x|twitter)\.com/(\w+/status/\d+)', message.content)
         if not match: return
-        original_url = match.group(0)
         status_part = match.group(1)
         mirror_url = f"https://vxtwitter.com/{status_part}"
         api_url = f"https://api.fxtwitter.com/{status_part}"
@@ -75,54 +77,54 @@ async def process_media_link(message, url_type):
     elif url_type == 'pixiv':
         match = re.search(r'https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/(\d+)', message.content)
         if not match: return
-        original_url = match.group(0)
-        artwork_id = match.group(1)
+        artwork_id = int(match.group(1)) # IDを整数に変換
         mirror_url = f"https://www.phixiv.net/artworks/{artwork_id}"
-        api_url = "https://api.pixiv.cat/v1/generate" # POSTメソッド用のAPIエンドポイント
 
     await message.channel.send(mirror_url)
 
     async with message.channel.typing():
         try:
             image_urls = []
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
-            }
             
-            async with aiohttp.ClientSession(headers=headers) as session:
-                if not api_url:
-                    await message.channel.send("APIのURL生成に失敗しました。")
-                    return
-
-                # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-                # APIへのアクセス方法をGETからPOSTに変更
-                # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-                if url_type == 'twitter':
+            if url_type == 'twitter':
+                async with aiohttp.ClientSession() as session:
                     async with session.get(api_url) as resp:
-                        if resp.status != 200:
-                            await message.channel.send(f"fxtwitter APIへのアクセスに失敗しました。(ステータスコード: {resp.status})")
-                            return
+                        if resp.status != 200: return
                         data = await resp.json()
                         media_list = data.get('tweet', {}).get('media', {}).get('all', [])
                         for media in media_list:
                             image_urls.append(media['url'])
 
-                elif url_type == 'pixiv':
-                    # POSTメソッドで、JSON形式でURLを送信
-                    async with session.post(api_url, json={'url': original_url}) as resp:
-                        if resp.status != 200:
-                            await message.channel.send(f"pixiv.cat APIへのアクセスに失敗しました。(ステータスコード: {resp.status})")
-                            return
-                        data = await resp.json()
-                        urls = data.get('urls', [])
-                        for url_info in urls:
-                            image_urls.append(url_info)
-
-                if not image_urls:
-                    await message.channel.send("画像が見つかりませんでした。")
+            elif url_type == 'pixiv':
+                # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                # Pixiv公式API(pixivpy)を使用する方式に変更
+                # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                try:
+                    # APIレスポンスから作品情報を取得
+                    json_result = await asyncio.to_thread(pixiv_api.illust_detail, artwork_id)
+                    if json_result.get('error'):
+                        await message.channel.send(f"Pixiv APIエラー: {json_result['error']['message']}")
+                        return
+                    
+                    illust = json_result.illust
+                    if illust.page_count == 1:
+                        # 1枚のイラストの場合
+                        image_urls.append(illust.meta_single_page.original_image_url)
+                    else:
+                        # 複数枚のイラストの場合
+                        for page in illust.meta_pages:
+                            image_urls.append(page.image_urls.original)
+                except Exception as e:
+                    await message.channel.send(f"Pixiv APIの処理中にエラーが発生しました: `{e}`")
                     return
 
-                download_headers = {'Referer': 'https://www.pixiv.net/'}
+            if not image_urls:
+                await message.channel.send("画像が見つかりませんでした。")
+                return
+
+            # 画像ダウンロード用のヘッダー
+            download_headers = {'Referer': 'https://www.pixiv.net/'}
+            async with aiohttp.ClientSession() as session:
                 for i, img_url in enumerate(image_urls):
                     if not img_url: continue
                     async with session.get(img_url, headers=download_headers) as img_resp:
@@ -214,8 +216,25 @@ def run_bot():
         print("DISCORD_BOT_TOKENが設定されていません。")
         return
 
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    # ボット起動時にPixiv APIにログインする処理を追加
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    pixiv_refresh_token = os.environ.get("PIXIV_REFRESH_TOKEN")
+    if not pixiv_refresh_token:
+        print("エラー: PIXIV_REFRESH_TOKENが設定されていません。Pixiv機能は利用できません。")
+    else:
+        try:
+            # 同期的なログイン処理を非同期で実行
+            loop = asyncio.get_event_loop()
+            loop.run_until_complete(
+                asyncio.to_thread(pixiv_api.auth, refresh_token=pixiv_refresh_token)
+            )
+            print("Pixiv APIに正常にログインしました。")
+        except Exception as e:
+            print(f"Pixiv APIへのログインに失敗しました: {e}")
+
     try:
-        loop = asyncio.get_running_loop()
+        loop = asyncio.get_event_loop()
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
