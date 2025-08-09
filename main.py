@@ -97,9 +97,6 @@ async def process_media_link(message, url_type):
                             image_urls.append(media['url'])
 
                 elif url_type == 'pixiv':
-                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-                    # phixivへのアクセス時にブラウザを装うヘッダーを追加
-                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
                     request_headers = {
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
                     }
@@ -109,6 +106,13 @@ async def process_media_link(message, url_type):
                             await message.channel.send("phixiv.netへのアクセスに失敗しました。")
                             return
                         html = await resp.text()
+                        
+                        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                        # デバッグ用：取得したHTMLをログに出力する
+                        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                        print("--- PHIXIV HTML START ---")
+                        print(html)
+                        print("--- PHIXIV HTML END ---")
                     
                     json_match = re.search(r'<script id="application/json">([\s\S]+?)</script>', html)
                     if not json_match:
