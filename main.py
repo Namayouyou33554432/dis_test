@@ -81,9 +81,6 @@ async def process_media_link(message, url_type):
         try:
             image_urls = []
             
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-            # 最終解決策：本物のブラウザを装うためのヘッダー情報
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
             request_headers = {
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
                 'Accept-Encoding': 'gzip, deflate, br',
@@ -103,7 +100,7 @@ async def process_media_link(message, url_type):
                 if url_type == 'twitter':
                     async with session.get(api_url, headers=request_headers) as resp:
                         if resp.status != 200:
-                            await message.channel.send("fxtwitter APIへのアクセスに失敗しました。")
+                            await message.channel.send(f"fxtwitter APIへのアクセスに失敗しました。(ステータスコード: {resp.status})")
                             return
                         data = await resp.json()
                         media_list = data.get('tweet', {}).get('media', {}).get('all', [])
@@ -111,28 +108,44 @@ async def process_media_link(message, url_type):
                             image_urls.append(media['url'])
 
                 elif url_type == 'pixiv':
-                    async with session.get(mirror_url, headers=request_headers) as resp:
-                        if resp.status != 200:
-                            print(f"phixiv.netへのアクセスに失敗しました。 Status: {resp.status}")
-                            await message.channel.send("phixiv.netへのアクセスに失敗しました。")
-                            return
-                        html = await resp.text()
-                    
+                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                    # Pixiv処理に詳細なエラーハンドリングを追加
+                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                    try:
+                        async with session.get(mirror_url, headers=request_headers, timeout=15) as resp:
+                            if resp.status != 200:
+                                await message.channel.send(f"phixiv.netへのアクセスに失敗しました。(ステータスコード: {resp.status})")
+                                return
+                            html = await resp.text()
+                    except asyncio.TimeoutError:
+                        await message.channel.send("phixiv.netへのアクセスがタイムアウトしました。")
+                        return
+
                     json_match = re.search(r'<script id="application/json">([\s\S]+?)</script>', html)
                     if not json_match:
-                        await message.channel.send("phixiv.netから画像情報を見つけられませんでした。")
+                        await message.channel.send("phixiv.netから画像情報(JSON)を見つけられませんでした。")
                         return
                     
-                    data = json.loads(json_match.group(1))
+                    try:
+                        data = json.loads(json_match.group(1))
+                    except json.JSONDecodeError:
+                        await message.channel.send("画像情報(JSON)の解析に失敗しました。")
+                        return
+
                     images = data.get('post', {}).get('images', [])
+                    if not images:
+                        await message.channel.send("JSON内に画像リストが見つかりませんでした。")
+                        return
+                        
                     for img_info in images:
-                        image_urls.append(img_info.get('urls', {}).get('original'))
+                        original_url = img_info.get('urls', {}).get('original')
+                        if original_url:
+                            image_urls.append(original_url)
 
                 if not image_urls:
                     await message.channel.send("画像が見つかりませんでした。")
                     return
                 
-                # 画像ダウンロード用のリファラーヘッダー
                 download_headers = {'Referer': 'https://www.pixiv.net/'}
 
                 for i, img_url in enumerate(image_urls):
@@ -148,11 +161,12 @@ async def process_media_link(message, url_type):
                             picture = discord.File(io.BytesIO(image_data), filename=filename)
                             await message.channel.send(file=picture)
                         else:
-                            await message.channel.send(f"画像 {i+1} のダウンロードに失敗しました。 (Status: {img_resp.status})")
+                            await message.channel.send(f"画像 {i+1} のダウンロードに失敗しました。 (ステータスコード: {img_resp.status})")
 
         except Exception as e:
+            # 予期せぬエラーが発生した場合、エラーの種類を報告する
             print(f"An error occurred during media processing: {e}")
-            await message.channel.send("画像の処理中にエラーが発生しました。")
+            await message.channel.send(f"予期せぬエラーが発生しました: `{type(e).__name__}`")
 
 def perform_gacha_draw(guaranteed=False):
     weights = GACHA_WEIGHTS_GUARANTEED if guaranteed else GACHA_WEIGHTS_NORMAL
