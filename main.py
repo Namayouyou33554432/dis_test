@@ -70,8 +70,7 @@ async def download_and_send_images(channel, image_urls):
 
     try:
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
-            'Referer': 'https://www.pixiv.net/'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
         }
         async with aiohttp.ClientSession(headers=headers) as session:
             MAX_FILE_SIZE = 24 * 1024 * 1024
@@ -103,55 +102,49 @@ async def process_media_link(message, url_type):
     
     try:
         async with message.channel.typing():
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
-                'Referer': 'https://www.pixiv.net/'
-            }
-            async with aiohttp.ClientSession(headers=headers) as session:
-                if url_type == 'twitter':
-                    match = re.search(r'https?://(?:www\.)?(?:x|twitter)\.com/(\w+/status/\d+)', message.content)
-                    if not match: return
-                    status_part = match.group(1)
-                    mirror_url = f"https://vxtwitter.com/{status_part}"
-                    api_url = f"https://api.fxtwitter.com/{status_part}"
-                    await message.channel.send(mirror_url)
-                    
+            if url_type == 'twitter':
+                match = re.search(r'https?://(?:www\.)?(?:x|twitter)\.com/(\w+/status/\d+)', message.content)
+                if not match: return
+                status_part = match.group(1)
+                mirror_url = f"https://vxtwitter.com/{status_part}"
+                api_url = f"https://api.fxtwitter.com/{status_part}"
+                await message.channel.send(mirror_url)
+                
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
+                async with aiohttp.ClientSession(headers=headers) as session:
                     async with session.get(api_url) as resp:
                         if resp.status == 200:
                             data = await resp.json()
                             media_list = data.get('tweet', {}).get('media', {}).get('all', [])
                             for media in media_list:
                                 image_urls.append(media['url'])
+            
+            elif url_type == 'pixiv':
+                match = re.search(r'https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/(\d+)', message.content)
+                if not match: return
+                mirror_url = f"https://www.phixiv.net/artworks/{match.group(1)}"
                 
-                elif url_type == 'pixiv':
-                    match = re.search(r'https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/(\d+)', message.content)
-                    if not match: return
-                    artwork_id = match.group(1)
-                    mirror_url = f"https://www.phixiv.net/artworks/{artwork_id}"
-                    await message.channel.send(mirror_url)
+                sent_message = await message.channel.send(mirror_url)
+                await asyncio.sleep(3) # Discordが埋め込みを生成するのを待つ
 
-                    # pxiv.catから直接画像URLを推測して探す (より確実な方法)
-                    for i in range(1, 21): # 最大20枚までチェック
-                        found_image_for_this_page = False
-                        for ext in ['.jpg', '.png', '.gif']:
-                            img_url = f"https://pxiv.cat/{artwork_id}-{i}{ext}"
-                            try:
-                                async with session.head(img_url, timeout=10, allow_redirects=True) as img_resp:
-                                    if img_resp.status == 200:
-                                        final_url = str(img_resp.url)
-                                        image_urls.append(final_url)
-                                        found_image_for_this_page = True
-                                        break
-                            except Exception:
-                                pass
-                        if not found_image_for_this_page:
-                            break
+                try:
+                    # メッセージを再取得して、更新された埋め込み情報を確認する
+                    updated_message = await message.channel.fetch_message(sent_message.id)
+                    if updated_message.embeds:
+                        for embed in updated_message.embeds:
+                            if embed.image and embed.image.url:
+                                image_urls.append(embed.image.url)
+                except Exception as e:
+                    print(f"Could not process embed for {mirror_url}: {e}")
 
             # --- 共通のダウンロード処理 ---
             if image_urls:
                 await download_and_send_images(message.channel, image_urls)
             else:
-                await message.channel.send("このリンクからは画像を見つけられませんでした。")
+                if url_type == 'pixiv':
+                    await message.channel.send("画像の自動再送信に失敗しました。埋め込みが表示されない場合は、手動で「再送信」と返信してください。")
+                else:
+                    await message.channel.send("このリンクからは画像を見つけられませんでした。")
 
     except Exception as e:
         print(f"予期せぬエラーが発生しました: {e}")
