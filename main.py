@@ -80,7 +80,10 @@ async def process_media_link(message, url_type):
     async with message.channel.typing():
         try:
             image_urls = []
-            async with aiohttp.ClientSession() as session:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
+            }
+            async with aiohttp.ClientSession(headers=headers) as session:
                 if url_type == 'twitter':
                     async with session.get(api_url) as resp:
                         if resp.status != 200: return
@@ -91,21 +94,25 @@ async def process_media_link(message, url_type):
 
                 elif url_type == 'pixiv':
                     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-                    # pxiv.cat を使って画像URLを組み立てる方式に変更
+                    # pxiv.catで複数のファイル形式を試す方式に変更
                     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
                     for i in range(1, 21): # 最大20枚まで試す
-                        # pXiv.catから直接画像を取得
-                        img_url = f"https://pxiv.cat/{artwork_id}-{i}.jpg"
-                        try:
-                            # HEADリクエストで画像の存在を確認
-                            async with session.head(img_url, allow_redirects=True) as head_resp:
-                                if head_resp.status == 200:
-                                    image_urls.append(str(head_resp.url))
-                                else:
-                                    # 画像が存在しない場合 (404など)、ループを抜ける
-                                    break
-                        except Exception:
-                            break # 接続エラーなどでもループを抜ける
+                        found_image_for_page = False
+                        for ext in ['.jpg', '.png', '.gif']: # 試すファイル形式
+                            img_url = f"https://pxiv.cat/{artwork_id}-{i}{ext}"
+                            try:
+                                async with session.head(img_url, allow_redirects=True) as head_resp:
+                                    if head_resp.status == 200:
+                                        image_urls.append(str(head_resp.url))
+                                        found_image_for_page = True
+                                        break # このページの画像が見つかったので、次のページへ
+                            except Exception:
+                                # 接続エラーなど
+                                continue
+                        
+                        if not found_image_for_page:
+                            # このページ番号の画像がどの形式でも見つからなければ終了
+                            break
 
                 if not image_urls:
                     await message.channel.send("画像が見つかりませんでした。")
@@ -124,7 +131,6 @@ async def process_media_link(message, url_type):
                             picture = discord.File(io.BytesIO(image_data), filename=filename)
                             await message.channel.send(file=picture)
                         else:
-                            # 存在確認で成功しているはずなので、このエラーは稀
                             print(f"画像 {i+1} のダウンロードに失敗しました。 (URL: {img_url}, Status: {img_resp.status})")
 
         except Exception as e:
@@ -213,6 +219,7 @@ def run_bot():
     
     if not loop.is_running():
         loop.run_forever()
+
 
 bot_thread = threading.Thread(target=run_bot)
 bot_thread.daemon = True
