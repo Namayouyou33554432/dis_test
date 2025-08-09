@@ -4,6 +4,10 @@ import discord
 from flask import Flask
 import threading
 import asyncio
+import re
+import io
+import json
+import aiohttp
 
 # -----------------------------------------------------------------------------
 # Flask (Render用Webサーバー)
@@ -22,6 +26,8 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
+# (SHOT_TYPE, STICKER, GACHA関連の定義は変更なし)
+# ... (省略) ...
 SHOT_TYPE = (
     (4, "紅霊夢A", "紅霊夢B", "紅魔理沙A", "紅魔理沙B"),
     (6, "妖霊夢A", "妖霊夢B", "妖魔理沙A", "妖魔理沙B", "妖咲夜A", "妖咲夜B"),
@@ -43,57 +49,114 @@ STICKER = (
     "<:chiaki:1318964308628996106>",
 )
 
-# -----------------------------------------------------------------------------
-# ガチャ機能
-# -----------------------------------------------------------------------------
 GACHA_TRIGGER = "<:img:1332781427498029106>"
-
-# ガチャ用のスタンプを定義
 GACHA_STAR_1 = ("<:JYUNYA:921397676166234162>", "<:maiahi:855369574819168266>", "<:emoji_33:901741259260039239>")
 GACHA_STAR_2 = ("<:beerjunya:859283357841489950>",)
 GACHA_STAR_3 = ("<:rainbowjunya2:930782219490983937>",)
-
-# 各レアリティの抽選アイテムリスト
 GACHA_ITEMS = [GACHA_STAR_1, GACHA_STAR_2, GACHA_STAR_3, STICKER]
-# 通常の抽選確率
 GACHA_WEIGHTS_NORMAL = [78.5, 18.5, 2.3, 0.7]
-# 10連目の確定抽選確率 (★1の確率を★2に加算)
 GACHA_WEIGHTS_GUARANTEED = [0, 18.5 + 78.5, 2.3, 0.7]
 
-def perform_gacha_draw(guaranteed=False):
+# -----------------------------------------------------------------------------
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# ここから画像ダウンロード機能の追加
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+async def process_media_link(message, url_type):
     """
-    指定された確率でガチャを1回引く
-    :param guaranteed: Trueの場合、10連目用の確定確率を使用する
-    :return: 当選したスタンプの文字列
+    メッセージからURLを抽出し、ミラーリングと画像ダウンロードを行う
     """
-    weights = GACHA_WEIGHTS_GUARANTEED if guaranteed else GACHA_WEIGHTS_NORMAL
-    # 確率に基づいてレアリティのカテゴリを選択
-    chosen_category = random.choices(GACHA_ITEMS, weights=weights, k=1)[0]
-    # 選択されたカテゴリの中からランダムに1つのスタンプを選択
-    return random.choice(chosen_category)
+    original_url = None
+    # メッセージから正規表現でURLを抽出
+    if url_type == 'twitter':
+        match = re.search(r'https?://(?:www\.)?(?:x|twitter)\.com/\w+/status/\d+', message.content)
+    elif url_type == 'pixiv':
+        match = re.search(r'https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/\d+', message.content)
+    
+    if not match:
+        return
+
+    original_url = match.group(0)
+
+    # 先にミラーサイトのリンクを送信
+    if url_type == 'twitter':
+        mirror_url = original_url.replace("x.com", "vxtwitter.com").replace("twitter.com", "vxtwitter.com")
+        await message.channel.send(mirror_url)
+    elif url_type == 'pixiv':
+        mirror_url = original_url.replace("www.pixiv.net", "www.phixiv.net")
+        await message.channel.send(mirror_url)
+
+    # 画像処理中は「入力中...」と表示
+    async with message.channel.typing():
+        try:
+            # yt-dlpを使ってメディア情報をJSON形式で取得
+            proc = await asyncio.create_subprocess_shell(
+                f'yt-dlp -j "{original_url}"',
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await proc.communicate()
+
+            if proc.returncode != 0:
+                print(f"yt-dlp error: {stderr.decode()}")
+                await message.channel.send("画像の取得に失敗しました。")
+                return
+
+            # yt-dlpの出力は複数行のJSONになることがある
+            for line in stdout.decode().strip().split('\n'):
+                data = json.loads(line)
+                
+                image_urls = []
+                if 'entries' in data:  # アルバムや複数枚の画像
+                    for entry in data['entries']:
+                        if 'url' in entry:
+                           image_urls.append(entry['url'])
+                elif 'url' in data:  # 1枚の画像や動画
+                    image_urls.append(data['url'])
+                
+                if not image_urls and 'thumbnails' in data: # フォールバック
+                    image_urls.append(data['thumbnails'][-1]['url'])
+
+                # 各画像をダウンロードして送信
+                async with aiohttp.ClientSession() as session:
+                    for i, img_url in enumerate(image_urls):
+                        # Pixivなど、リファラーが必要なサイトに対応
+                        headers = {'Referer': 'https://www.pixiv.net/'} if url_type == 'pixiv' else {}
+                        async with session.get(img_url, headers=headers) as resp:
+                            if resp.status == 200:
+                                image_data = await resp.read()
+                                # Discordのファイルサイズ制限 (8MB) をチェック
+                                if len(image_data) > 8 * 1024 * 1024:
+                                    await message.channel.send(f"画像 {i+1} は8MBを超えているため、送信できません。")
+                                    continue
+                                
+                                filename = os.path.basename(img_url.split('?')[0])
+                                picture = discord.File(io.BytesIO(image_data), filename=filename)
+                                await message.channel.send(file=picture)
+                            else:
+                                await message.channel.send(f"画像 {i+1} のダウンロードに失敗しました。")
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            await message.channel.send("画像の処理中にエラーが発生しました。")
 
 # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-# この関数を修正しました
+# 画像ダウンロード機能の追加ここまで
 # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+
+def perform_gacha_draw(guaranteed=False):
+    weights = GACHA_WEIGHTS_GUARANTEED if guaranteed else GACHA_WEIGHTS_NORMAL
+    chosen_category = random.choices(GACHA_ITEMS, weights=weights, k=1)[0]
+    return random.choice(chosen_category)
+
 async def send_gacha_results(message):
-    """ガチャを10回実行し、結果を5つずつ改行して送信する"""
     results = []
-    # 1〜9回目は通常の確率で抽選
     for _ in range(9):
         results.append(perform_gacha_draw())
-    
-    # 10回目は★2以上確定の確率で抽選
     results.append(perform_gacha_draw(guaranteed=True))
-    
-    # 結果を5つずつに分けて整形
     line1 = " ".join(results[0:5])
     line2 = " ".join(results[5:10])
-    
-    # 改行を入れて送信
     await message.channel.send(f"{line1}\n{line2}")
 
 def get_random_shot():
-    """インデントエラーを修正"""
     game = random.choice(SHOT_TYPE)
     return random.choice(game[1:])
 
@@ -111,6 +174,17 @@ async def on_message(message):
     if message.author == client.user or message.author.bot:
         return
         
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    # Twitter/Pixivのリンク処理を新しい関数に置き換え
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    if "x.com" in message.content or "twitter.com" in message.content:
+        asyncio.create_task(process_media_link(message, 'twitter'))
+        return 
+
+    if "pixiv.net" in message.content:
+        asyncio.create_task(process_media_link(message, 'pixiv'))
+        return
+
     # ガチャのトリガー
     if GACHA_TRIGGER in message.content:
         await send_gacha_results(message)
@@ -119,12 +193,6 @@ async def on_message(message):
     if (client.user.mentioned_in(message) or any(keyword in message.content for keyword in ["本日の機体", "今日の機体", "きょうのきたい", "ほんじつのきたい", "イッツルナティックターイム！"])):
         await message.channel.send(get_random_shot())
         return
-    if "x.com" in message.content:
-        await message.channel.send(message.content.replace("x.com", "vxtwitter.com"))
-        return
-    if "www.pixiv.net" in message.content:
-        await message.channel.send(message.content.replace("www.pixiv.net", "www.phixiv.net"))
-        return
     if any(keyword in message.content for keyword in ["にゃ～ん", "にゃーん"]):
         await message.channel.send("にゃ～ん")
         return
@@ -132,7 +200,6 @@ async def on_message(message):
         await message.channel.send("今日の機体、本日の機体 またはメンションで機体出します")
         return
     if any(keyword in message.content for keyword in ["ソースコード", "そーす"]):
-        # ↓↓↓ あなたのGitHubリポジトリのURLに書き換えてください
         await message.channel.send("https://github.com/Kakeyouyou33554432/dis_test")
         return
     if any(keyword in message.content for keyword in ["スタンプ", "すたんぷ"]):
@@ -151,24 +218,18 @@ def run_bot():
         print("DISCORD_BOT_TOKENが設定されていません。")
         return
 
-    # asyncioのイベントループを適切に設定
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
     
-    # client.start()をタスクとして実行
     loop.create_task(client.start(bot_token))
     
-    # イベントループを実行し続ける
     if not loop.is_running():
         loop.run_forever()
 
 
-# Discordボットを別のスレッドで起動する
-# Gunicornがこのファイルをインポートして`app`を起動した際に、
-# このスレッドも開始される
 bot_thread = threading.Thread(target=run_bot)
 bot_thread.daemon = True
 bot_thread.start()
