@@ -58,7 +58,24 @@ GACHA_WEIGHTS_NORMAL = [78.5, 18.5, 2.3, 0.7]
 GACHA_WEIGHTS_GUARANTEED = [0, 18.5 + 78.5, 2.3, 0.7]
 
 # -----------------------------------------------------------------------------
-# ヘルパー関数 (★★★★★ DM送信機能を追加 ★★★★★)
+# UIコンポーネント (★★★★★ 削除ボタンを追加 ★★★★★)
+# -----------------------------------------------------------------------------
+class DeleteButtonView(discord.ui.View):
+    def __init__(self, *, timeout=180):
+        super().__init__(timeout=timeout)
+
+    @discord.ui.button(label="削除", style=discord.ButtonStyle.danger, emoji="🗑️")
+    async def delete_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # ボタンが押されたメッセージを削除
+        try:
+            await interaction.message.delete()
+        except discord.HTTPException as e:
+            print(f"Failed to delete message: {e}")
+            # エラーが発生した場合でも、ユーザーには何も表示しない
+            await interaction.response.defer() # ボタンの応答を完了させる
+
+# -----------------------------------------------------------------------------
+# ヘルパー関数
 # -----------------------------------------------------------------------------
 async def download_and_send_images(message, image_urls):
     """
@@ -68,7 +85,6 @@ async def download_and_send_images(message, image_urls):
         print("download_and_send_images called with no URLs.")
         return
 
-    # まず全ての画像をダウンロードしてdiscord.Fileオブジェクトのリストを作成
     files_to_send = []
     try:
         headers = {
@@ -101,20 +117,20 @@ async def download_and_send_images(message, image_urls):
 
     # DMへの送信を試みる
     try:
+        view = DeleteButtonView()
         for file in files_to_send:
-            await message.author.send(file=file)
-        # 成功した場合は何もメッセージを送らない
+            # ★★★★★ 削除ボタンを付けて送信 ★★★★★
+            await message.author.send(file=file, view=view)
         print(f"Sent {len(files_to_send)} images to {message.author}'s DM.")
     except discord.Forbidden:
-        # DMがブロックされている場合など
         print(f"Failed to send DM to {message.author}. Sending to channel instead.")
         await message.channel.send(
             f"{message.author.mention} DMに画像を送信できませんでした。プライバシー設定を確認してください。\n代わりにこのチャンネルに画像を投稿します。"
         )
+        # チャンネルに送る場合は削除ボタンなし
         for file in files_to_send:
             await message.channel.send(file=file)
     except Exception as e:
-        # その他の送信エラー
         print(f"An error occurred while sending files: {e}")
         traceback.print_exc()
         await message.channel.send(f"画像の送信中に予期せぬエラーが発生しました: `{type(e).__name__}`")
@@ -149,9 +165,8 @@ async def process_media_link(message, url_type):
                 if not match: return
                 artwork_id = match.group(1)
                 mirror_url = f"https://www.phixiv.net/artworks/{artwork_id}"
-                sent_mirror_message = await message.channel.send(mirror_url)
+                await message.channel.send(mirror_url)
 
-                # pxiv.catから直接画像URLを推測して探す
                 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36', 'Referer': 'https://www.pixiv.net/'}
                 async with aiohttp.ClientSession(headers=headers) as session:
                     for i in range(1, 21):
@@ -170,7 +185,6 @@ async def process_media_link(message, url_type):
                         if not found_image_for_this_page:
                             break
 
-            # --- 共通のダウンロード＆送信処理 ---
             if image_urls:
                 await download_and_send_images(message, image_urls)
             else:
@@ -191,7 +205,6 @@ async def process_embed_images(message, embeds):
         await message.channel.send("この埋め込みには保存できる画像が見つかりませんでした。", reference=message)
         return
     
-    # download_and_send_imagesに元のメッセージオブジェクトを渡す
     await download_and_send_images(message, image_urls)
 
 
@@ -228,7 +241,6 @@ async def on_message(message):
             try:
                 referenced_message = await message.channel.fetch_message(message.reference.message_id)
                 if referenced_message.embeds:
-                    # ここで渡すmessageは「再送信」と打ったユーザーのメッセージ
                     asyncio.create_task(process_embed_images(message, referenced_message.embeds))
                     return
             except discord.NotFound:
@@ -259,7 +271,7 @@ async def on_message(message):
         await message.channel.send("今日の機体、本日の機体 またはメンションで機体出します")
         return
     if any(keyword in message.content for keyword in ["ソースコード", "そーす"]):
-        await message.channel.send("https://github.com/Namayouyou33554432/dis_test")
+        await message.channel.send("https://github.com/Kakeyouyou33554432/dis_test")
         return
     if any(keyword in message.content for keyword in ["スタンプ", "すたんぷ"]):
         await message.channel.send(random.choice(STICKER))
