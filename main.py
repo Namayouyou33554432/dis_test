@@ -25,6 +25,8 @@ def hello():
 # -----------------------------------------------------------------------------
 intents = discord.Intents.default()
 intents.message_content = True
+# ★★★★★ リアクションを検知するためにIntentsを追加 ★★★★★
+intents.reactions = True
 client = discord.Client(intents=intents)
 
 # (SHOT_TYPE, STICKER, GACHA_* 定数は変更ないため省略)
@@ -58,7 +60,7 @@ GACHA_WEIGHTS_NORMAL = [78.5, 18.5, 2.3, 0.7]
 GACHA_WEIGHTS_GUARANTEED = [0, 18.5 + 78.5, 2.3, 0.7]
 
 # -----------------------------------------------------------------------------
-# UIコンポーネント (★★★★★ 削除ボタンを追加 ★★★★★)
+# UIコンポーネント
 # -----------------------------------------------------------------------------
 class DeleteButtonView(discord.ui.View):
     def __init__(self, *, timeout=180):
@@ -66,30 +68,26 @@ class DeleteButtonView(discord.ui.View):
 
     @discord.ui.button(label="削除", style=discord.ButtonStyle.danger, emoji="🗑️")
     async def delete_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # ボタンが押されたメッセージを削除
         try:
             await interaction.message.delete()
         except discord.HTTPException as e:
             print(f"Failed to delete message: {e}")
-            # エラーが発生した場合でも、ユーザーには何も表示しない
-            await interaction.response.defer() # ボタンの応答を完了させる
+            await interaction.response.defer()
 
 # -----------------------------------------------------------------------------
-# ヘルパー関数
+# ヘルパー関数 (★★★★★ より汎用的に修正 ★★★★★)
 # -----------------------------------------------------------------------------
-async def download_and_send_images(message, image_urls):
+async def download_and_send_images(destination, image_urls, fallback_channel, mention_user):
     """
-    URLリストから画像をダウンロードし、DMに送信を試みる。失敗した場合は元のチャンネルに送信する。
+    URLリストから画像をダウンロードし、指定された宛先（DM）に送信を試みる。
+    失敗した場合はフォールバック用のチャンネルに送信する。
     """
     if not image_urls:
-        print("download_and_send_images called with no URLs.")
         return
 
     files_to_send = []
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
-        }
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
         async with aiohttp.ClientSession(headers=headers) as session:
             MAX_FILE_SIZE = 24 * 1024 * 1024
             for i, img_url in enumerate(image_urls):
@@ -98,42 +96,39 @@ async def download_and_send_images(message, image_urls):
                         if img_resp.status == 200:
                             image_data = await img_resp.read()
                             if len(image_data) > MAX_FILE_SIZE:
-                                await message.channel.send(f"画像 {i+1} はサイズが大きすぎるため、送信できません。({len(image_data) / 1024 / 1024:.2f}MB)")
+                                await fallback_channel.send(f"画像 {i+1} はサイズが大きすぎるため、送信できません。({len(image_data) / 1024 / 1024:.2f}MB)")
                                 continue
                             filename = os.path.basename(img_url.split('?')[0])
                             files_to_send.append(discord.File(io.BytesIO(image_data), filename=filename))
                         else:
-                            await message.channel.send(f"画像 {i+1} のダウンロードに失敗しました。 (Status: {img_resp.status})")
+                            await fallback_channel.send(f"画像 {i+1} のダウンロードに失敗しました。 (Status: {img_resp.status})")
                 except Exception as dl_error:
-                    await message.channel.send(f"画像 {i+1} の処理中にエラーが発生しました: `{dl_error}`")
+                    await fallback_channel.send(f"画像 {i+1} の処理中にエラーが発生しました: `{dl_error}`")
     except Exception as e:
         print(f"画像ダウンロード中に予期せぬエラーが発生しました: {e}")
         traceback.print_exc()
-        await message.channel.send(f"画像ダウンロード中に予期せぬエラーが発生しました: `{type(e).__name__}`")
+        await fallback_channel.send(f"画像ダウンロード中に予期せぬエラーが発生しました: `{type(e).__name__}`")
         return
 
     if not files_to_send:
         return
 
-    # DMへの送信を試みる
     try:
         view = DeleteButtonView()
         for file in files_to_send:
-            # ★★★★★ 削除ボタンを付けて送信 ★★★★★
-            await message.author.send(file=file, view=view)
-        print(f"Sent {len(files_to_send)} images to {message.author}'s DM.")
+            await destination.send(file=file, view=view)
+        print(f"Sent {len(files_to_send)} images to {destination}.")
     except discord.Forbidden:
-        print(f"Failed to send DM to {message.author}. Sending to channel instead.")
-        await message.channel.send(
-            f"{message.author.mention} DMに画像を送信できませんでした。プライバシー設定を確認してください。\n代わりにこのチャンネルに画像を投稿します。"
+        print(f"Failed to send DM to {destination}. Sending to channel instead.")
+        await fallback_channel.send(
+            f"{mention_user.mention} DMに画像を送信できませんでした。プライバシー設定を確認してください。\n代わりにこのチャンネルに画像を投稿します。"
         )
-        # チャンネルに送る場合は削除ボタンなし
         for file in files_to_send:
-            await message.channel.send(file=file)
+            await fallback_channel.send(file=file)
     except Exception as e:
         print(f"An error occurred while sending files: {e}")
         traceback.print_exc()
-        await message.channel.send(f"画像の送信中に予期せぬエラーが発生しました: `{type(e).__name__}`")
+        await fallback_channel.send(f"画像の送信中に予期せぬエラーが発生しました: `{type(e).__name__}`")
 
 # -----------------------------------------------------------------------------
 # メインの処理関数
@@ -186,7 +181,7 @@ async def process_media_link(message, url_type):
                             break
 
             if image_urls:
-                await download_and_send_images(message, image_urls)
+                await download_and_send_images(message.author, image_urls, message.channel, message.author)
             else:
                 await message.channel.send("このリンクからは画像を見つけられませんでした。")
 
@@ -205,7 +200,8 @@ async def process_embed_images(message, embeds):
         await message.channel.send("この埋め込みには保存できる画像が見つかりませんでした。", reference=message)
         return
     
-    await download_and_send_images(message, image_urls)
+    # 「再送信」と打ったユーザー (message.author) にDMを送る
+    await download_and_send_images(message.author, image_urls, message.channel, message.author)
 
 
 def perform_gacha_draw(guaranteed=False):
@@ -279,6 +275,54 @@ async def on_message(message):
     if any(s in message.content for s in STICKER) or "💤" in message.content:
         await message.channel.send(random.choice(STICKER))
         return
+
+# ★★★★★ リアクションを検知するイベントを追加 ★★★★★
+@client.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+    # ボット自身のリアクションは無視
+    if payload.user_id == client.user.id:
+        return
+
+    # 特定のリアクション絵文字かチェック
+    target_emojis = ['<:sikei:1404428286112825404>', '❤️']
+    if str(payload.emoji) not in target_emojis:
+        return
+
+    try:
+        channel = client.get_channel(payload.channel_id)
+        # DM内でのリアクションなどは無視
+        if not isinstance(channel, discord.TextChannel):
+             return
+        message = await channel.fetch_message(payload.message_id)
+    except (discord.NotFound, discord.Forbidden):
+        return
+
+    # メッセージに埋め込みがあるかチェック
+    if not message.embeds:
+        return
+
+    # 埋め込みから画像URLを抽出
+    image_urls = []
+    for embed in message.embeds:
+        if embed.image and embed.image.url:
+            image_urls.append(embed.image.url)
+
+    if not image_urls:
+        return
+
+    try:
+        # リアクションしたユーザーを取得
+        user = await client.fetch_user(payload.user_id)
+    except discord.NotFound:
+        return
+
+    # 画像をDMに送信するタスクを作成
+    asyncio.create_task(download_and_send_images(
+        destination=user,
+        image_urls=image_urls,
+        fallback_channel=channel,
+        mention_user=user
+    ))
 
 # -----------------------------------------------------------------------------
 # 並列起動
