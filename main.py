@@ -259,7 +259,7 @@ async def on_message(message):
         await message.channel.send("今日の機体、本日の機体 またはメンションで機体出します")
         return
     if any(keyword in message.content for keyword in ["ソースコード", "そーす"]):
-        await message.channel.send("https://github.com/Kakeyouyou33554432/dis_test")
+        await message.channel.send("https://github.com/Namayouyou33554432/dis_test")
         return
     if any(keyword in message.content for keyword in ["スタンプ", "すたんぷ"]):
         await message.channel.send(random.choice(STICKER))
