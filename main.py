@@ -58,16 +58,18 @@ GACHA_WEIGHTS_NORMAL = [78.5, 18.5, 2.3, 0.7]
 GACHA_WEIGHTS_GUARANTEED = [0, 18.5 + 78.5, 2.3, 0.7]
 
 # -----------------------------------------------------------------------------
-# ヘルパー関数
+# ヘルパー関数 (★★★★★ DM送信機能を追加 ★★★★★)
 # -----------------------------------------------------------------------------
-async def download_and_send_images(channel, image_urls):
+async def download_and_send_images(message, image_urls):
     """
-    URLのリストを受け取り、画像をダウンロードしてファイルとして送信する共通関数
+    URLリストから画像をダウンロードし、DMに送信を試みる。失敗した場合は元のチャンネルに送信する。
     """
     if not image_urls:
         print("download_and_send_images called with no URLs.")
         return
 
+    # まず全ての画像をダウンロードしてdiscord.Fileオブジェクトのリストを作成
+    files_to_send = []
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
@@ -80,19 +82,42 @@ async def download_and_send_images(channel, image_urls):
                         if img_resp.status == 200:
                             image_data = await img_resp.read()
                             if len(image_data) > MAX_FILE_SIZE:
-                                await channel.send(f"画像 {i+1} はサイズが大きすぎるため、送信できません。({len(image_data) / 1024 / 1024:.2f}MB)")
+                                await message.channel.send(f"画像 {i+1} はサイズが大きすぎるため、送信できません。({len(image_data) / 1024 / 1024:.2f}MB)")
                                 continue
                             filename = os.path.basename(img_url.split('?')[0])
-                            picture = discord.File(io.BytesIO(image_data), filename=filename)
-                            await channel.send(file=picture)
+                            files_to_send.append(discord.File(io.BytesIO(image_data), filename=filename))
                         else:
-                            await channel.send(f"画像 {i+1} のダウンロードに失敗しました。 (Status: {img_resp.status})")
+                            await message.channel.send(f"画像 {i+1} のダウンロードに失敗しました。 (Status: {img_resp.status})")
                 except Exception as dl_error:
-                    await channel.send(f"画像 {i+1} の処理中にエラーが発生しました: `{dl_error}`")
+                    await message.channel.send(f"画像 {i+1} の処理中にエラーが発生しました: `{dl_error}`")
     except Exception as e:
-        print(f"画像処理中に予期せぬエラーが発生しました: {e}")
+        print(f"画像ダウンロード中に予期せぬエラーが発生しました: {e}")
         traceback.print_exc()
-        await channel.send(f"画像処理中に予期せぬエラーが発生しました: `{type(e).__name__}`")
+        await message.channel.send(f"画像ダウンロード中に予期せぬエラーが発生しました: `{type(e).__name__}`")
+        return
+
+    if not files_to_send:
+        return
+
+    # DMへの送信を試みる
+    try:
+        for file in files_to_send:
+            await message.author.send(file=file)
+        # 成功した場合は何もメッセージを送らない
+        print(f"Sent {len(files_to_send)} images to {message.author}'s DM.")
+    except discord.Forbidden:
+        # DMがブロックされている場合など
+        print(f"Failed to send DM to {message.author}. Sending to channel instead.")
+        await message.channel.send(
+            f"{message.author.mention} DMに画像を送信できませんでした。プライバシー設定を確認してください。\n代わりにこのチャンネルに画像を投稿します。"
+        )
+        for file in files_to_send:
+            await message.channel.send(file=file)
+    except Exception as e:
+        # その他の送信エラー
+        print(f"An error occurred while sending files: {e}")
+        traceback.print_exc()
+        await message.channel.send(f"画像の送信中に予期せぬエラーが発生しました: `{type(e).__name__}`")
 
 # -----------------------------------------------------------------------------
 # メインの処理関数
@@ -122,29 +147,34 @@ async def process_media_link(message, url_type):
             elif url_type == 'pixiv':
                 match = re.search(r'https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/(\d+)', message.content)
                 if not match: return
-                mirror_url = f"https://www.phixiv.net/artworks/{match.group(1)}"
-                
-                sent_message = await message.channel.send(mirror_url)
-                await asyncio.sleep(3) # Discordが埋め込みを生成するのを待つ
+                artwork_id = match.group(1)
+                mirror_url = f"https://www.phixiv.net/artworks/{artwork_id}"
+                sent_mirror_message = await message.channel.send(mirror_url)
 
-                try:
-                    # メッセージを再取得して、更新された埋め込み情報を確認する
-                    updated_message = await message.channel.fetch_message(sent_message.id)
-                    if updated_message.embeds:
-                        for embed in updated_message.embeds:
-                            if embed.image and embed.image.url:
-                                image_urls.append(embed.image.url)
-                except Exception as e:
-                    print(f"Could not process embed for {mirror_url}: {e}")
+                # pxiv.catから直接画像URLを推測して探す
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36', 'Referer': 'https://www.pixiv.net/'}
+                async with aiohttp.ClientSession(headers=headers) as session:
+                    for i in range(1, 21):
+                        found_image_for_this_page = False
+                        for ext in ['.jpg', '.png', '.gif']:
+                            img_url = f"https://pxiv.cat/{artwork_id}-{i}{ext}"
+                            try:
+                                async with session.head(img_url, timeout=7, allow_redirects=True) as img_resp:
+                                    if img_resp.status == 200:
+                                        final_url = str(img_resp.url)
+                                        image_urls.append(final_url)
+                                        found_image_for_this_page = True
+                                        break
+                            except Exception:
+                                pass
+                        if not found_image_for_this_page:
+                            break
 
-            # --- 共通のダウンロード処理 ---
+            # --- 共通のダウンロード＆送信処理 ---
             if image_urls:
-                await download_and_send_images(message.channel, image_urls)
+                await download_and_send_images(message, image_urls)
             else:
-                if url_type == 'pixiv':
-                    await message.channel.send("画像の自動再送信に失敗しました。埋め込みが表示されない場合は、手動で「再送信」と返信してください。")
-                else:
-                    await message.channel.send("このリンクからは画像を見つけられませんでした。")
+                await message.channel.send("このリンクからは画像を見つけられませんでした。")
 
     except Exception as e:
         print(f"予期せぬエラーが発生しました: {e}")
@@ -160,10 +190,9 @@ async def process_embed_images(message, embeds):
     if not image_urls:
         await message.channel.send("この埋め込みには保存できる画像が見つかりませんでした。", reference=message)
         return
-
-    await message.channel.send(f"{len(image_urls)}件の画像を再送信します...", reference=message)
-    async with message.channel.typing():
-        await download_and_send_images(message.channel, image_urls)
+    
+    # download_and_send_imagesに元のメッセージオブジェクトを渡す
+    await download_and_send_images(message, image_urls)
 
 
 def perform_gacha_draw(guaranteed=False):
@@ -199,6 +228,7 @@ async def on_message(message):
             try:
                 referenced_message = await message.channel.fetch_message(message.reference.message_id)
                 if referenced_message.embeds:
+                    # ここで渡すmessageは「再送信」と打ったユーザーのメッセージ
                     asyncio.create_task(process_embed_images(message, referenced_message.embeds))
                     return
             except discord.NotFound:
