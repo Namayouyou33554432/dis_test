@@ -28,6 +28,10 @@ intents.message_content = True
 intents.reactions = True
 client = discord.Client(intents=intents)
 
+# ユーザーごとの送信先設定を記憶する辞書
+# { user_id: "dm" or "channel" }
+user_settings = {}
+
 # (SHOT_TYPE, STICKER, GACHA_* 定数は変更ないため省略)
 SHOT_TYPE = (
     (4, "紅霊夢A", "紅霊夢B", "紅魔理沙A", "紅魔理沙B"),
@@ -108,25 +112,28 @@ async def download_and_send_images(destination, image_urls, fallback_channel, me
     if not files_to_send:
         return
 
+    is_dm_target = isinstance(destination, (discord.User, discord.Member))
+
     try:
-        view = DeleteButtonView()
+        view = DeleteButtonView() if is_dm_target else None
         for file in files_to_send:
             await destination.send(file=file, view=view)
         print(f"Sent {len(files_to_send)} images to {destination}.")
-        return True # DM送信成功
+        return True
     except discord.Forbidden:
-        print(f"Failed to send DM to {destination}. Sending to channel instead.")
-        await fallback_channel.send(
-            f"{mention_user.mention} DMに画像を送信できませんでした。プライバシー設定を確認してください。\n代わりにこのチャンネルに画像を投稿します。"
-        )
-        for file in files_to_send:
-            await fallback_channel.send(file=file)
-        return False # DM送信失敗
+        if is_dm_target:
+            print(f"Failed to send DM to {destination}. Sending to channel instead.")
+            await fallback_channel.send(
+                f"{mention_user.mention} DMに画像を送信できませんでした。プライバシー設定を確認してください。\n代わりにこのチャンネルに画像を投稿します。"
+            )
+            for file in files_to_send:
+                await fallback_channel.send(file=file) # チャンネルにはボタンなしで送信
+        return False
     except Exception as e:
         print(f"An error occurred while sending files: {e}")
         traceback.print_exc()
         await fallback_channel.send(f"画像の送信中に予期せぬエラーが発生しました: `{type(e).__name__}`")
-        return False # DM送信失敗
+        return False
 
 # -----------------------------------------------------------------------------
 # メインの処理関数
@@ -156,38 +163,35 @@ async def process_media_link(message, url_type):
             elif url_type == 'pixiv':
                 match = re.search(r'https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/(\d+)', message.content)
                 if not match: return
-                artwork_id = match.group(1)
-                mirror_url = f"https://www.phixiv.net/artworks/{artwork_id}"
-                await message.channel.send(mirror_url)
+                mirror_url = f"https://www.phixiv.net/artworks/{match.group(1)}"
+                
+                sent_message = await message.channel.send(mirror_url)
+                await asyncio.sleep(3)
 
-                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36', 'Referer': 'https://www.pixiv.net/'}
-                async with aiohttp.ClientSession(headers=headers) as session:
-                    for i in range(1, 21):
-                        found_image_for_this_page = False
-                        for ext in ['.jpg', '.png', '.gif']:
-                            img_url = f"https://pxiv.cat/{artwork_id}-{i}{ext}"
-                            try:
-                                async with session.head(img_url, timeout=7, allow_redirects=True) as img_resp:
-                                    if img_resp.status == 200:
-                                        final_url = str(img_resp.url)
-                                        image_urls.append(final_url)
-                                        found_image_for_this_page = True
-                                        break
-                            except Exception:
-                                pass
-                        if not found_image_for_this_page:
-                            break
+                try:
+                    updated_message = await message.channel.fetch_message(sent_message.id)
+                    if updated_message.embeds:
+                        for embed in updated_message.embeds:
+                            if embed.image and embed.image.url:
+                                image_urls.append(embed.image.url)
+                except Exception as e:
+                    print(f"Could not process embed for {mirror_url}: {e}")
 
+            # ★★★★★ ユーザー設定に応じて送信先を決定 ★★★★★
             if image_urls:
-                await download_and_send_images(message.author, image_urls, message.channel, message.author)
+                user_id = message.author.id
+                send_preference = user_settings.get(user_id, 'dm') # デフォルトはDM
+                
+                destination = message.author if send_preference == 'dm' else message.channel
+                
+                await download_and_send_images(destination, image_urls, message.channel, message.author)
             else:
                 await message.channel.send("このリンクからは画像を見つけられませんでした。")
 
-        # ★★★★★ 処理完了後にリアクションを付ける ★★★★★
         try:
             await message.add_reaction('❤️')
         except discord.HTTPException:
-            pass # リアクションに失敗しても気にしない
+            pass
 
     except Exception as e:
         print(f"予期せぬエラーが発生しました: {e}")
@@ -204,7 +208,11 @@ async def process_embed_images(message, embeds):
         await message.channel.send("この埋め込みには保存できる画像が見つかりませんでした。", reference=message)
         return
     
-    await download_and_send_images(message.author, image_urls, message.channel, message.author)
+    # リアクションの場合は、リアクションしたユーザーの設定に従う
+    user_id = message.author.id
+    send_preference = user_settings.get(user_id, 'dm')
+    destination = message.author if send_preference == 'dm' else message.channel
+    await download_and_send_images(destination, image_urls, message.channel, message.author)
 
 
 def perform_gacha_draw(guaranteed=False):
@@ -227,7 +235,7 @@ def get_random_shot():
 @client.event
 async def on_ready():
     print(f'Bot準備完了～ Logged in as {client.user}')
-    game = discord.Game("説明！ で説明だすよ")
+    game = discord.Game("!dmで送信先切替")
     await client.change_presence(status=discord.Status.online, activity=game)
 
 @client.event
@@ -235,6 +243,19 @@ async def on_message(message):
     if message.author == client.user or message.author.bot:
         return
     
+    # ★★★★★ DM送信設定を切り替えるコマンドを追加 ★★★★★
+    if message.content.lower() == '!dm':
+        user_id = message.author.id
+        current_setting = user_settings.get(user_id, 'dm') # デフォルトは 'dm'
+
+        if current_setting == 'dm':
+            user_settings[user_id] = 'channel'
+            await message.channel.send(f"{message.author.mention} 画像の送信先を **このチャンネル** に変更しました。")
+        else:
+            user_settings[user_id] = 'dm'
+            await message.channel.send(f"{message.author.mention} 画像の送信先を **DM** に変更しました。")
+        return
+
     if message.content.lower() in ["再送信", "download"]:
         if message.reference and message.reference.message_id:
             try:
@@ -267,7 +288,7 @@ async def on_message(message):
         await message.channel.send("にゃ～ん")
         return
     if any(keyword in message.content for keyword in ["説明!", "せつめい!"]):
-        await message.channel.send("今日の機体、本日の機体 またはメンションで機体出します")
+        await message.channel.send("今日の機体、本日の機体 またはメンションで機体出します\n`!dm`で画像の送信先をDMかチャンネルか切り替えられます。")
         return
     if any(keyword in message.content for keyword in ["ソースコード", "そーす"]):
         await message.channel.send("https://github.com/Kakeyouyou33554432/dis_test")
@@ -311,22 +332,23 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
         user = await client.fetch_user(payload.user_id)
     except discord.NotFound:
         return
+    
+    # リアクションの場合は、リアクションしたユーザーの設定に従う
+    send_preference = user_settings.get(user.id, 'dm')
+    destination = user if send_preference == 'dm' else channel
 
-    # リアクションの場合は、元のチャンネルにフォールバックメッセージを送る
     success = await download_and_send_images(
-        destination=user,
+        destination=destination,
         image_urls=image_urls,
         fallback_channel=channel,
         mention_user=user
     )
     
-    # ★★★★★ リアクションでの処理完了後にもリアクションを付ける ★★★★★
     if success:
         try:
-            # リアクションされたメッセージにリアクションを付ける
             await message.add_reaction(payload.emoji)
         except discord.HTTPException:
-            pass # 失敗しても気にしない
+            pass
 
 # -----------------------------------------------------------------------------
 # 並列起動
