@@ -61,6 +61,7 @@ GACHA_WEIGHTS_GUARANTEED = [0, 18.5 + 78.5, 2.3, 0.7]
 
 # -----------------------------------------------------------------------------
 # UIコンポーネント
+# UIコンポーネント (★★★★★ 削除ボタンの処理を修正 ★★★★★)
 # -----------------------------------------------------------------------------
 class DeleteButtonView(discord.ui.View):
     def __init__(self, *, timeout=180):
@@ -68,14 +69,19 @@ class DeleteButtonView(discord.ui.View):
 
     @discord.ui.button(label="削除", style=discord.ButtonStyle.danger, emoji="🗑️")
     async def delete_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # ★★★★★ 先にインタラクションに応答して、エラーを防ぐ ★★★★★
+        await interaction.response.defer()
         try:
+            # その後でメッセージを削除
             await interaction.message.delete()
         except discord.HTTPException as e:
+            # エラーが発生した場合はログに出力するだけ
             print(f"Failed to delete message: {e}")
             await interaction.response.defer()
 
 # -----------------------------------------------------------------------------
 # ヘルパー関数 (★★★★★ より汎用的に修正 ★★★★★)
+# ヘルパー関数
 # -----------------------------------------------------------------------------
 async def download_and_send_images(destination, image_urls, fallback_channel, mention_user):
     """
@@ -135,7 +141,7 @@ async def download_and_send_images(destination, image_urls, fallback_channel, me
 # -----------------------------------------------------------------------------
 async def process_media_link(message, url_type):
     image_urls = []
-    
+
     try:
         async with message.channel.typing():
             if url_type == 'twitter':
@@ -145,7 +151,7 @@ async def process_media_link(message, url_type):
                 mirror_url = f"https://vxtwitter.com/{status_part}"
                 api_url = f"https://api.fxtwitter.com/{status_part}"
                 await message.channel.send(mirror_url)
-                
+
                 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
                 async with aiohttp.ClientSession(headers=headers) as session:
                     async with session.get(api_url) as resp:
@@ -154,7 +160,7 @@ async def process_media_link(message, url_type):
                             media_list = data.get('tweet', {}).get('media', {}).get('all', [])
                             for media in media_list:
                                 image_urls.append(media['url'])
-            
+
             elif url_type == 'pixiv':
                 match = re.search(r'https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/(\d+)', message.content)
                 if not match: return
@@ -199,7 +205,7 @@ async def process_embed_images(message, embeds):
     if not image_urls:
         await message.channel.send("この埋め込みには保存できる画像が見つかりませんでした。", reference=message)
         return
-    
+
     # 「再送信」と打ったユーザー (message.author) にDMを送る
     await download_and_send_images(message.author, image_urls, message.channel, message.author)
 
@@ -231,7 +237,7 @@ async def on_ready():
 async def on_message(message):
     if message.author == client.user or message.author.bot:
         return
-    
+
     if message.content.lower() in ["再送信", "download"]:
         if message.reference and message.reference.message_id:
             try:
@@ -256,7 +262,7 @@ async def on_message(message):
     if GACHA_TRIGGER in message.content:
         await send_gacha_results(message)
         return
-        
+
     if (client.user.mentioned_in(message) or any(keyword in message.content for keyword in ["本日の機体", "今日の機体", "きょうのきたい", "ほんじつのきたい", "イッツルナティックターイム！"])):
         await message.channel.send(get_random_shot())
         return
@@ -338,9 +344,9 @@ def run_bot():
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-    
+
     loop.create_task(client.start(bot_token))
-    
+
     if not loop.is_running():
         loop.run_forever()
 
