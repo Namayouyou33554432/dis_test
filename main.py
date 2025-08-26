@@ -1,3 +1,4 @@
+#DMに画像送るver
 import os
 import random
 import discord
