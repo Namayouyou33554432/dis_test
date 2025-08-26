@@ -82,7 +82,7 @@ class DeleteButtonView(discord.ui.View):
 # -----------------------------------------------------------------------------
 # ヘルパー関数
 # -----------------------------------------------------------------------------
-async def download_and_send_images(destination, image_url_groups, fallback_channel, mention_user):
+async def download_and_send_images(destination, image_url_groups, fallback_channel, mention_user, original_url=None):
     if not image_url_groups:
         return False
 
@@ -133,7 +133,14 @@ async def download_and_send_images(destination, image_url_groups, fallback_chann
         view = DeleteButtonView() if is_dm_target else None
         for i in range(0, len(files_to_send), 10):
             chunk = files_to_send[i:i+10]
-            await destination.send(files=chunk, view=view)
+            # ★★★★★ ここからが修正箇所 ★★★★★
+            # DMへの最初の送信にのみ、元URLをコンテンツとして追加
+            content_to_send = None
+            if is_dm_target and i == 0 and original_url:
+                content_to_send = f"<{original_url}>"
+            
+            await destination.send(content=content_to_send, files=chunk, view=view)
+            # ★★★★★ ここまでが修正箇所 ★★★★★
         print(f"Sent {len(files_to_send)} images to {destination}.")
         return True
     except discord.Forbidden:
@@ -222,22 +229,16 @@ async def process_media_link(message, url_type):
                             return
 
             if image_url_groups:
-                # ★★★★★ ここからが送信ロジックの修正箇所 ★★★★★
                 user_id = message.author.id
                 send_preference = user_settings.get(user_id, 'channel')
                 
-                # 常にチャンネルに画像を送信
                 await download_and_send_images(message.channel, image_url_groups, message.channel, message.author)
                 
-                # DMがONの場合、追加でDMにも送信
                 if send_preference == 'dm':
-                    if original_url:
-                        try:
-                            await message.author.send(f"<{original_url}>")
-                        except discord.HTTPException as e:
-                            print(f"Could not send original URL to DM: {e}")
-                    await download_and_send_images(message.author, image_url_groups, message.channel, message.author)
-                # ★★★★★ ここまでが修正箇所 ★★★★★
+                    # ★★★★★ ここからが修正箇所 ★★★★★
+                    # download_and_send_images に original_url を渡す
+                    await download_and_send_images(message.author, image_url_groups, message.channel, message.author, original_url=original_url)
+                    # ★★★★★ ここまでが修正箇所 ★★★★★
             else:
                 await message.channel.send("このリンクからは画像を見つけられませんでした。")
 
@@ -268,11 +269,10 @@ async def process_embed_images(message, embeds):
     user_id = message.author.id
     send_preference = user_settings.get(user_id, 'channel')
     
-    # 常にチャンネルに画像を送信
     await download_and_send_images(message.channel, image_url_groups, message.channel, message.author)
     
-    # DMがONの場合、追加でDMにも送信
     if send_preference == 'dm':
+        # 埋め込みからの再送信では元のURLが不明なため、画像のみ送信
         await download_and_send_images(message.author, image_url_groups, message.channel, message.author)
 
 
@@ -398,10 +398,8 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     
     send_preference = user_settings.get(user.id, 'channel')
     
-    # 常にチャンネルに画像を送信
     await download_and_send_images(channel, image_url_groups, channel, user)
     
-    # DMがONの場合、追加でDMにも送信
     if send_preference == 'dm':
         await download_and_send_images(user, image_url_groups, channel, user)
     
