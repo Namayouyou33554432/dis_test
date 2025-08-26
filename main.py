@@ -59,7 +59,7 @@ GACHA_WEIGHTS_NORMAL = [78.5, 18.5, 2.3, 0.7]
 GACHA_WEIGHTS_GUARANTEED = [0, 18.5 + 78.5, 2.3, 0.7]
 
 # -----------------------------------------------------------------------------
-# UIコンポーネント
+# UIコンポーネント (★★★★★ 削除ボタンの処理を修正 ★★★★★)
 # -----------------------------------------------------------------------------
 class DeleteButtonView(discord.ui.View):
     def __init__(self, *, timeout=180):
@@ -67,10 +67,13 @@ class DeleteButtonView(discord.ui.View):
 
     @discord.ui.button(label="削除", style=discord.ButtonStyle.danger, emoji="🗑️")
     async def delete_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # ★★★★★ 先にインタラクションに応答して、エラーを防ぐ ★★★★★
         await interaction.response.defer()
         try:
+            # その後でメッセージを削除
             await interaction.message.delete()
         except discord.HTTPException as e:
+            # エラーが発生した場合はログに出力するだけ
             print(f"Failed to delete message: {e}")
 
 # -----------------------------------------------------------------------------
