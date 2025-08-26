@@ -167,7 +167,6 @@ async def process_media_link(message, url_type):
                             for media in media_list:
                                 image_urls.append(media['url'])
             
-            # ★★★★★ ここからがあなたの分析を反映した新しいPixiv処理 ★★★★★
             elif url_type == 'pixiv':
                 match = re.search(r'https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/(\d+)', message.content)
                 if not match: return
@@ -184,28 +183,33 @@ async def process_media_link(message, url_type):
                         if resp.status == 200:
                             data = await resp.json()
                             
-                            # APIから取得した投稿日時(UTC)をJSTに変換
-                            utc_dt = datetime.fromisoformat(data['create_date'].replace('Z', '+00:00'))
-                            jst_dt = utc_dt.astimezone(timezone(timedelta(hours=9)))
-                            date_path = jst_dt.strftime('%Y/%m/%d/%H/%M/%S')
+                            # ★★★★★ ここからが404エラー対策の修正箇所 ★★★★★
+                            # タイムスタンプ変換ではなく、APIが返すURLから直接情報を抽出して再構築する
+                            proxy_urls = data.get("image_proxy_urls", [])
+                            if not proxy_urls:
+                                await message.channel.send("APIから画像URLが見つかりませんでした。")
+                                return
 
-                            # ページ数を取得
-                            page_count = len(data.get("image_proxy_urls", []))
-                            if page_count == 0:
-                                page_count = 1 # フォールバック
+                            # 正規表現でURLから日付パス、ID、ページ番号、拡張子を抽出
+                            pattern = re.compile(r'/img/(\d{4}/\d{2}/\d{2}/\d{2}/\d{2}/\d{2})/(\d+)_p(\d+)(?:_master\d+)?\.(jpg|png|gif)')
 
-                            # ファイル拡張子を特定 (プロキシURLから推測)
-                            proxy_url_sample = data.get("image_proxy_urls", [""])[0]
-                            extension = "jpg" # デフォルト
-                            if proxy_url_sample.endswith(".png"):
-                                extension = "png"
-                            elif proxy_url_sample.endswith(".gif"):
-                                extension = "gif"
+                            for proxy_url in proxy_urls:
+                                url_match = pattern.search(proxy_url)
+                                if url_match:
+                                    date_path = url_match.group(1)
+                                    illust_id = url_match.group(2)
+                                    page_num = url_match.group(3)
+                                    extension = url_match.group(4)
+                                    
+                                    # pixiv.reのオリジナル高画質画像URLを構築
+                                    original_url = f"https://i.pixiv.re/img-original/img/{date_path}/{illust_id}_p{page_num}.{extension}"
+                                    image_urls.append(original_url)
+                                else:
+                                    print(f"Could not parse proxy URL: {proxy_url}")
+                            
+                            if not image_urls:
+                                await message.channel.send("画像URLの解析に失敗しました。")
 
-                            # 全ページのpixiv.re URLを生成
-                            for i in range(page_count):
-                                url = f"https://i.pixiv.re/img-original/img/{date_path}/{artwork_id}_p{i}.{extension}"
-                                image_urls.append(url)
                         else:
                             print(f"phixiv API returned status {resp.status} for ID {artwork_id}")
                             await message.channel.send(f"APIエラーが発生しました (Status: {resp.status})。サービスがダウンしている可能性があります。", reference=message)
@@ -218,7 +222,11 @@ async def process_media_link(message, url_type):
                 destination = message.author if send_preference == 'dm' else message.channel
                 await download_and_send_images(destination, image_urls, message.channel, message.author)
             else:
-                await message.channel.send("このリンクからは画像を見つけられませんでした。")
+                # image_urlsが空（APIエラーやパース失敗）の場合のメッセージ
+                if url_type == 'pixiv' and not image_urls:
+                    pass # 既に個別のエラーメッセージが出ているはずなので何もしない
+                else:
+                    await message.channel.send("このリンクからは画像を見つけられませんでした。")
 
         try:
             await message.add_reaction('❤️')
