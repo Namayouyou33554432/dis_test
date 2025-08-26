@@ -1,4 +1,3 @@
-#DMに画像送るver
 import os
 import random
 import discord
@@ -32,6 +31,7 @@ client = discord.Client(intents=intents)
 
 # ユーザーごとの送信先設定を記憶する辞書
 # { user_id: "dm" or "channel" }
+# デフォルトは 'channel' (DMオフ)
 user_settings = {}
 
 # (SHOT_TYPE, STICKER, GACHA_* 定数は変更ないため省略)
@@ -94,30 +94,28 @@ async def download_and_send_images(destination, image_url_groups, fallback_chann
         }
         async with aiohttp.ClientSession(headers=headers) as session:
             MAX_FILE_SIZE = 24 * 1024 * 1024
-            # ★★★★★ ここからが拡張子ローリングの修正箇所 ★★★★★
             for i, url_group in enumerate(image_url_groups):
                 download_success = False
-                for img_url in url_group: # [.png, .jpg, .gif] の順で試行
+                for img_url in url_group:
                     try:
                         async with session.get(img_url) as img_resp:
                             if img_resp.status == 200:
                                 image_data = await img_resp.read()
                                 if len(image_data) > MAX_FILE_SIZE:
                                     await fallback_channel.send(f"画像 {i+1} はサイズが大きすぎるため、送信できません。({len(image_data) / 1024 / 1024:.2f}MB)")
-                                    download_success = True # 送信はしないが、ダウンロード自体は成功とみなす
+                                    download_success = True
                                     break
                                 
                                 filename = os.path.basename(img_url.split('?')[0])
                                 files_to_send.append(discord.File(io.BytesIO(image_data), filename=filename))
                                 download_success = True
-                                break # 成功したので次の画像の処理へ
+                                break
                     except Exception as dl_error:
                         print(f"Attempt failed for {img_url}: {dl_error}")
-                        continue # 次の拡張子を試す
+                        continue
                 
                 if not download_success:
                     await fallback_channel.send(f"画像 {i+1} のダウンロードに全ての拡張子で失敗しました。")
-            # ★★★★★ ここまでが修正箇所 ★★★★★
     except Exception as e:
         print(f"画像ダウンロード中に予期せぬエラーが発生しました: {e}")
         traceback.print_exc()
@@ -125,9 +123,8 @@ async def download_and_send_images(destination, image_url_groups, fallback_chann
         return False
 
     if not files_to_send:
-        # ダウンロードは成功したが、ファイルサイズ超過などで送信対象がなかった場合
-        if any(image_url_groups): # URLグループが空でなかったことを確認
-             return True # 処理としては成功
+        if any(image_url_groups):
+             return True
         return False
 
     is_dm_target = isinstance(destination, (discord.User, discord.Member))
@@ -143,11 +140,8 @@ async def download_and_send_images(destination, image_url_groups, fallback_chann
         if is_dm_target:
             print(f"Failed to send DM to {destination}. Sending to channel instead.")
             await fallback_channel.send(
-                f"{mention_user.mention} DMに画像を送信できませんでした。プライバシー設定を確認してください。\n代わりにこのチャンネルに画像を投稿します。"
+                f"{mention_user.mention} DMに画像を送信できませんでした。プライバシー設定を確認してください。"
             )
-            for i in range(0, len(files_to_send), 10):
-                chunk = files_to_send[i:i+10]
-                await fallback_channel.send(files=chunk)
         return False
     except Exception as e:
         print(f"An error occurred while sending files: {e}")
@@ -159,18 +153,15 @@ async def download_and_send_images(destination, image_url_groups, fallback_chann
 # メインの処理関数
 # -----------------------------------------------------------------------------
 async def process_media_link(message, url_type):
-    image_url_groups = [] # 拡張子の候補をグループ化するリストに変更
+    image_url_groups = []
     
     try:
         async with message.channel.typing():
             if url_type == 'twitter':
                 match = re.search(r'https?://(?:www\.)?(?:x|twitter)\.com/(\w+/status/\d+)', message.content)
                 if not match: return
-                status_part = match.group(1)
-                mirror_url = f"https://vxtwitter.com/{status_part}"
-                api_url = f"https://api.fxtwitter.com/{status_part}"
-                await message.channel.send(mirror_url)
                 
+                api_url = f"https://api.fxtwitter.com/{match.group(1)}"
                 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
                 async with aiohttp.ClientSession(headers=headers) as session:
                     async with session.get(api_url) as resp:
@@ -178,16 +169,12 @@ async def process_media_link(message, url_type):
                             data = await resp.json()
                             media_list = data.get('tweet', {}).get('media', {}).get('all', [])
                             for media in media_list:
-                                # Twitterの場合はURLが1つなので、そのままグループに追加
                                 image_url_groups.append([media['url']])
             
             elif url_type == 'pixiv':
                 match = re.search(r'https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/(\d+)', message.content)
                 if not match: return
                 artwork_id = match.group(1)
-
-                mirror_url = f"https://www.phixiv.net/artworks/{artwork_id}"
-                await message.channel.send(mirror_url)
 
                 api_url = f"https://www.phixiv.net/api/info?id={artwork_id}"
                 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
@@ -211,13 +198,9 @@ async def process_media_link(message, url_type):
                                     illust_id = url_match.group(2)
                                     page_num = url_match.group(3)
                                     
-                                    # ★★★★★ ここからが拡張子ローリングの修正箇所 ★★★★★
-                                    # 拡張子を除いたベースURLを作成
                                     base_url = f"https://i.pixiv.re/img-original/img/{date_path}/{illust_id}_p{page_num}"
-                                    # 試行する拡張子のリストを作成
                                     potential_urls = [f"{base_url}.png", f"{base_url}.jpg", f"{base_url}.gif"]
                                     image_url_groups.append(potential_urls)
-                                    # ★★★★★ ここまでが修正箇所 ★★★★★
                                 else:
                                     print(f"Could not parse proxy URL: {proxy_url}")
                             
@@ -230,15 +213,17 @@ async def process_media_link(message, url_type):
                             return
 
             if image_url_groups:
+                # ★★★★★ ここからが送信先変更の修正箇所 ★★★★★
                 user_id = message.author.id
-                send_preference = user_settings.get(user_id, 'dm')
+                # デフォルトは'channel' (DMオフ)
+                send_preference = user_settings.get(user_id, 'channel') 
+                
                 destination = message.author if send_preference == 'dm' else message.channel
+                
                 await download_and_send_images(destination, image_url_groups, message.channel, message.author)
+                # ★★★★★ ここまでが修正箇所 ★★★★★
             else:
-                if url_type == 'pixiv' and not image_url_groups:
-                    pass
-                else:
-                    await message.channel.send("このリンクからは画像を見つけられませんでした。")
+                await message.channel.send("このリンクからは画像を見つけられませんでした。")
 
         try:
             await message.add_reaction('❤️')
@@ -254,7 +239,6 @@ async def process_embed_images(message, embeds):
     image_url_groups = []
     for embed in embeds:
         if embed.image and embed.image.url:
-            # 埋め込み画像はURLが確定しているので、単一のリストとして追加
             image_url_groups.append([embed.image.url])
 
     if not image_url_groups:
@@ -262,7 +246,7 @@ async def process_embed_images(message, embeds):
         return
     
     user_id = message.author.id
-    send_preference = user_settings.get(user_id, 'dm')
+    send_preference = user_settings.get(user_id, 'channel') # デフォルトはチャンネル
     destination = message.author if send_preference == 'dm' else message.channel
     await download_and_send_images(destination, image_url_groups, message.channel, message.author)
 
@@ -287,7 +271,8 @@ def get_random_shot():
 @client.event
 async def on_ready():
     print(f'Bot準備完了～ Logged in as {client.user}')
-    game = discord.Game("!dmで送信先切替")
+    # ★★★★★ Botのステータスメッセージを更新 ★★★★★
+    game = discord.Game("!dmでDM送信ON/OFF")
     await client.change_presence(status=discord.Status.online, activity=game)
 
 @client.event
@@ -295,17 +280,19 @@ async def on_message(message):
     if message.author == client.user or message.author.bot:
         return
     
+    # ★★★★★ ここからが!dmコマンドの修正箇所 ★★★★★
     if message.content.lower() == '!dm':
         user_id = message.author.id
-        current_setting = user_settings.get(user_id, 'dm')
+        current_setting = user_settings.get(user_id, 'channel') # デフォルトは 'channel' (DMオフ)
 
-        if current_setting == 'dm':
-            user_settings[user_id] = 'channel'
-            await message.channel.send(f"{message.author.mention} 画像の送信先を **このチャンネル** に変更しました。")
-        else:
+        if current_setting == 'channel':
             user_settings[user_id] = 'dm'
-            await message.channel.send(f"{message.author.mention} 画像の送信先を **DM** に変更しました。")
+            await message.channel.send(f"{message.author.mention} 画像のDM送信を **ON** にしました。")
+        else:
+            user_settings[user_id] = 'channel'
+            await message.channel.send(f"{message.author.mention} 画像のDM送信を **OFF** にしました。")
         return
+    # ★★★★★ ここまでが修正箇所 ★★★★★
 
     if message.content.lower() in ["再送信", "download"]:
         if message.reference and message.reference.message_id:
@@ -339,7 +326,7 @@ async def on_message(message):
         await message.channel.send("にゃ～ん")
         return
     if any(keyword in message.content for keyword in ["説明!", "せつめい!"]):
-        await message.channel.send("今日の機体、本日の機体 またはメンションで機体出します\n`!dm`で画像の送信先をDMかチャンネルか切り替えられます。")
+        await message.channel.send("今日の機体、本日の機体 またはメンションで機体出します\n`!dm`で画像のDM送信をON/OFFに切り替えられます。")
         return
     if any(keyword in message.content for keyword in ["ソースコード", "そーす"]):
         await message.channel.send("https://github.com/Kakeyouyou33554432/dis_test")
@@ -387,7 +374,7 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     except discord.NotFound:
         return
     
-    send_preference = user_settings.get(user.id, 'dm')
+    send_preference = user_settings.get(user.id, 'channel') # デフォルトはチャンネル
     destination = user if send_preference == 'dm' else channel
 
     success = await download_and_send_images(
