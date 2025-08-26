@@ -189,38 +189,51 @@ async def process_media_link(message, url_type):
                                 await message.add_reaction(error_emoji)
                                 return
 
-                            data = await resp.json()
-                            if isinstance(data, list) and data:
-                                data = data[0]
+                            # ★★★★★ ここからが修正箇所 ★★★★★
+                            json_response = await resp.json()
+                            artwork_data = None
+                            if isinstance(json_response, list) and json_response:
+                                artwork_data = json_response[0]
+                            elif isinstance(json_response, dict):
+                                artwork_data = json_response
 
-                            is_r18 = any(tag.get('name') == 'R-18' for tag in data.get('tags', []) if isinstance(tag, dict))
+                            if not artwork_data or not isinstance(artwork_data, dict):
+                                print(f"Invalid or empty API response for ID {artwork_id}: {json_response}")
+                                await message.channel.send("APIから有効な作品データを取得できませんでした。", reference=message)
+                                await message.add_reaction(error_emoji)
+                                return
+
+                            is_r18 = any(tag.get('name') == 'R-18' for tag in artwork_data.get('tags', []) if isinstance(tag, dict))
                             if is_r18 and not message.channel.is_nsfw():
                                 print(f"Blocked R-18 content in SFW channel for ID {artwork_id}")
                                 await message.channel.send("この作品はR-18指定のため、NSFWチャンネル以外では画像を取得できません。", reference=message, delete_after=10)
                                 await message.add_reaction(error_emoji)
                                 return
 
-                            # ★★★★★ ここからが修正箇所 ★★★★★
-                            if 'urls' in data and isinstance(data['urls'], dict):
-                                page_count = data.get('page_count', 1)
-                                urls_dict = data['urls']
+                            # 新しい堅牢なURL解析ロジック
+                            if 'urls' in artwork_data and isinstance(artwork_data['urls'], dict):
+                                page_count = artwork_data.get('page_count', 1)
+                                urls_dict = artwork_data['urls']
                                 original_url_template = urls_dict.get('original')
 
-                                if original_url_template:
-                                    if page_count > 1 and '_p0' in original_url_template:
-                                        # 標準的な複数ページの作品
-                                        for i in range(page_count):
-                                            image_urls.append(original_url_template.replace('_p0', f'_p{i}'))
-                                    else:
-                                        # 1ページの作品、または不明な形式の複数ページ作品
-                                        # どちらの場合でも、最初の画像としてURLをそのまま追加するのが最善
-                                        image_urls.append(original_url_template)
+                                # Priority 1: 標準的な複数ページ形式 (_p0)
+                                if page_count > 1 and original_url_template and '_p0' in original_url_template:
+                                    for i in range(page_count):
+                                        image_urls.append(original_url_template.replace('_p0', f'_p{i}'))
+                                
+                                # Priority 2: 'original'キーを持つ単一ページまたは不明な複数ページ形式
+                                elif original_url_template:
+                                    image_urls.append(original_url_template)
+                                    if page_count > 1:
+                                        print(f"Warning: Found single URL for a multi-page work (ID: {artwork_id}). Only sending first page.")
+
+                                # Priority 3: 'original'キーがない場合のフォールバック (p0, p1, ...形式)
                                 else:
-                                    # 'original'キーが見つからない場合のフォールバック
                                     for i in range(page_count):
                                         page_key = f"p{i}"
-                                        if page_key in urls_dict and 'original' in urls_dict[page_key]:
-                                            image_urls.append(urls_dict[page_key]['original'])
+                                        page_data = urls_dict.get(page_key)
+                                        if isinstance(page_data, dict) and 'original' in page_data:
+                                            image_urls.append(page_data['original'])
                             # ★★★★★ ここまでが修正箇所 ★★★★★
 
                     except asyncio.TimeoutError:
