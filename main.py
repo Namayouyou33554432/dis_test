@@ -9,6 +9,7 @@ import io
 import json
 import aiohttp
 import traceback
+from datetime import datetime, timedelta, timezone
 
 # -----------------------------------------------------------------------------
 # Flask (Render用Webサーバー)
@@ -82,11 +83,15 @@ class DeleteButtonView(discord.ui.View):
 # -----------------------------------------------------------------------------
 async def download_and_send_images(destination, image_urls, fallback_channel, mention_user):
     if not image_urls:
-        return
+        return False
 
     files_to_send = []
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
+        # pixiv.re からダウンロードするため、Refererヘッダーを付与
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+            'Referer': 'https://www.pixiv.net/'
+        }
         async with aiohttp.ClientSession(headers=headers) as session:
             MAX_FILE_SIZE = 24 * 1024 * 1024
             for i, img_url in enumerate(image_urls):
@@ -107,17 +112,18 @@ async def download_and_send_images(destination, image_urls, fallback_channel, me
         print(f"画像ダウンロード中に予期せぬエラーが発生しました: {e}")
         traceback.print_exc()
         await fallback_channel.send(f"画像ダウンロード中に予期せぬエラーが発生しました: `{type(e).__name__}`")
-        return
+        return False
 
     if not files_to_send:
-        return
+        return False
 
     is_dm_target = isinstance(destination, (discord.User, discord.Member))
 
     try:
         view = DeleteButtonView() if is_dm_target else None
-        for file in files_to_send:
-            await destination.send(file=file, view=view)
+        for i in range(0, len(files_to_send), 10):
+            chunk = files_to_send[i:i+10]
+            await destination.send(files=chunk, view=view)
         print(f"Sent {len(files_to_send)} images to {destination}.")
         return True
     except discord.Forbidden:
@@ -126,8 +132,9 @@ async def download_and_send_images(destination, image_urls, fallback_channel, me
             await fallback_channel.send(
                 f"{mention_user.mention} DMに画像を送信できませんでした。プライバシー設定を確認してください。\n代わりにこのチャンネルに画像を投稿します。"
             )
-            for file in files_to_send:
-                await fallback_channel.send(file=file) # チャンネルにはボタンなしで送信
+            for i in range(0, len(files_to_send), 10):
+                chunk = files_to_send[i:i+10]
+                await fallback_channel.send(files=chunk)
         return False
     except Exception as e:
         print(f"An error occurred while sending files: {e}")
@@ -160,30 +167,55 @@ async def process_media_link(message, url_type):
                             for media in media_list:
                                 image_urls.append(media['url'])
             
+            # ★★★★★ ここからがあなたの分析を反映した新しいPixiv処理 ★★★★★
             elif url_type == 'pixiv':
                 match = re.search(r'https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/(\d+)', message.content)
                 if not match: return
-                mirror_url = f"https://www.phixiv.net/artworks/{match.group(1)}"
+                artwork_id = match.group(1)
+
+                mirror_url = f"https://www.phixiv.net/artworks/{artwork_id}"
+                await message.channel.send(mirror_url)
+
+                api_url = f"https://www.phixiv.net/api/info?id={artwork_id}"
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
                 
-                sent_message = await message.channel.send(mirror_url)
-                await asyncio.sleep(3)
+                async with aiohttp.ClientSession(headers=headers) as session:
+                    async with session.get(api_url) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            
+                            # APIから取得した投稿日時(UTC)をJSTに変換
+                            utc_dt = datetime.fromisoformat(data['create_date'].replace('Z', '+00:00'))
+                            jst_dt = utc_dt.astimezone(timezone(timedelta(hours=9)))
+                            date_path = jst_dt.strftime('%Y/%m/%d/%H/%M/%S')
 
-                try:
-                    updated_message = await message.channel.fetch_message(sent_message.id)
-                    if updated_message.embeds:
-                        for embed in updated_message.embeds:
-                            if embed.image and embed.image.url:
-                                image_urls.append(embed.image.url)
-                except Exception as e:
-                    print(f"Could not process embed for {mirror_url}: {e}")
+                            # ページ数を取得
+                            page_count = len(data.get("image_proxy_urls", []))
+                            if page_count == 0:
+                                page_count = 1 # フォールバック
 
-            # ユーザー設定に応じて送信先を決定
+                            # ファイル拡張子を特定 (プロキシURLから推測)
+                            proxy_url_sample = data.get("image_proxy_urls", [""])[0]
+                            extension = "jpg" # デフォルト
+                            if proxy_url_sample.endswith(".png"):
+                                extension = "png"
+                            elif proxy_url_sample.endswith(".gif"):
+                                extension = "gif"
+
+                            # 全ページのpixiv.re URLを生成
+                            for i in range(page_count):
+                                url = f"https://i.pixiv.re/img-original/img/{date_path}/{artwork_id}_p{i}.{extension}"
+                                image_urls.append(url)
+                        else:
+                            print(f"phixiv API returned status {resp.status} for ID {artwork_id}")
+                            await message.channel.send(f"APIエラーが発生しました (Status: {resp.status})。サービスがダウンしている可能性があります。", reference=message)
+                            return
+            # ★★★★★ ここまで ★★★★★
+
             if image_urls:
                 user_id = message.author.id
-                send_preference = user_settings.get(user_id, 'dm') # デフォルトはDM
-                
+                send_preference = user_settings.get(user_id, 'dm')
                 destination = message.author if send_preference == 'dm' else message.channel
-                
                 await download_and_send_images(destination, image_urls, message.channel, message.author)
             else:
                 await message.channel.send("このリンクからは画像を見つけられませんでした。")
@@ -208,7 +240,6 @@ async def process_embed_images(message, embeds):
         await message.channel.send("この埋め込みには保存できる画像が見つかりませんでした。", reference=message)
         return
     
-    # リアクションの場合は、リアクションしたユーザーの設定に従う
     user_id = message.author.id
     send_preference = user_settings.get(user_id, 'dm')
     destination = message.author if send_preference == 'dm' else message.channel
@@ -245,7 +276,7 @@ async def on_message(message):
     
     if message.content.lower() == '!dm':
         user_id = message.author.id
-        current_setting = user_settings.get(user_id, 'dm') # デフォルトは 'dm'
+        current_setting = user_settings.get(user_id, 'dm')
 
         if current_setting == 'dm':
             user_settings[user_id] = 'channel'
@@ -316,7 +347,6 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     except (discord.NotFound, discord.Forbidden):
         return
 
-    # ★★★★★ ボット自身のメッセージへのリアクションのみを処理するよう修正 ★★★★★
     if message.author.id != client.user.id:
         return
 
@@ -348,7 +378,13 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     
     if success:
         try:
-            await message.add_reaction(payload.emoji)
+            found = False
+            for reaction in message.reactions:
+                if reaction.emoji == payload.emoji and reaction.me:
+                    found = True
+                    break
+            if not found:
+                await message.add_reaction(payload.emoji)
         except discord.HTTPException:
             pass
 
