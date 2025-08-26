@@ -68,10 +68,14 @@ GACHA_WEIGHTS_GUARANTEED = [0, 18.5 + 78.5, 2.3, 0.7]
 # UIコンポーネント
 # -----------------------------------------------------------------------------
 class DeleteButtonView(discord.ui.View):
-    def __init__(self, *, timeout=180):
-        super().__init__(timeout=timeout)
+    # ★★★★★ ここからが修正箇所 ★★★★★
+    # timeout=None でボタンを無期限化
+    def __init__(self):
+        super().__init__(timeout=None)
 
-    @discord.ui.button(label="削除", style=discord.ButtonStyle.danger, emoji="🗑️")
+    # custom_id を設定してボタンを永続化
+    @discord.ui.button(label="削除", style=discord.ButtonStyle.danger, emoji="🗑️", custom_id="persistent_delete_button")
+    # ★★★★★ ここまでが修正箇所 ★★★★★
     async def delete_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         try:
@@ -133,14 +137,11 @@ async def download_and_send_images(destination, image_url_groups, fallback_chann
         view = DeleteButtonView() if is_dm_target else None
         for i in range(0, len(files_to_send), 10):
             chunk = files_to_send[i:i+10]
-            # ★★★★★ ここからが修正箇所 ★★★★★
-            # DMへの最初の送信にのみ、元URLをコンテンツとして追加
             content_to_send = None
             if is_dm_target and i == 0 and original_url:
                 content_to_send = f"<{original_url}>"
             
             await destination.send(content=content_to_send, files=chunk, view=view)
-            # ★★★★★ ここまでが修正箇所 ★★★★★
         print(f"Sent {len(files_to_send)} images to {destination}.")
         return True
     except discord.Forbidden:
@@ -235,10 +236,7 @@ async def process_media_link(message, url_type):
                 await download_and_send_images(message.channel, image_url_groups, message.channel, message.author)
                 
                 if send_preference == 'dm':
-                    # ★★★★★ ここからが修正箇所 ★★★★★
-                    # download_and_send_images に original_url を渡す
                     await download_and_send_images(message.author, image_url_groups, message.channel, message.author, original_url=original_url)
-                    # ★★★★★ ここまでが修正箇所 ★★★★★
             else:
                 await message.channel.send("このリンクからは画像を見つけられませんでした。")
 
@@ -272,7 +270,6 @@ async def process_embed_images(message, embeds):
     await download_and_send_images(message.channel, image_url_groups, message.channel, message.author)
     
     if send_preference == 'dm':
-        # 埋め込みからの再送信では元のURLが不明なため、画像のみ送信
         await download_and_send_images(message.author, image_url_groups, message.channel, message.author)
 
 
@@ -298,6 +295,10 @@ async def on_ready():
     print(f'Bot準備完了～ Logged in as {client.user}')
     game = discord.Game("!dmでDM送信ON/OFF")
     await client.change_presence(status=discord.Status.online, activity=game)
+    # ★★★★★ ここからが修正箇所 ★★★★★
+    # Bot起動時に永続Viewを登録する
+    client.add_view(DeleteButtonView())
+    # ★★★★★ ここまでが修正箇所 ★★★★★
 
 @client.event
 async def on_message(message):
