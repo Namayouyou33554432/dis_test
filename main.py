@@ -140,6 +140,16 @@ async def download_and_send_images(destination, image_urls, fallback_channel, me
 # メインの処理関数
 # -----------------------------------------------------------------------------
 async def process_media_link(message, url_type):
+    # ★★★★★ ここからが修正箇所 ★★★★★
+    processing_emoji = "🤔"
+    error_emoji = "⚠️"
+    try:
+        await message.add_reaction(processing_emoji)
+    except (discord.Forbidden, discord.HTTPException):
+        # リアクションが付けられなくても処理は続行
+        pass
+    # ★★★★★ ここまでが修正箇所 ★★★★★
+
     image_urls = []
     
     try:
@@ -161,17 +171,14 @@ async def process_media_link(message, url_type):
                             for media in media_list:
                                 image_urls.append(media['url'])
             
-            # ★★★★★ ここからが修正箇所 ★★★★★
             elif url_type == 'pixiv':
                 match = re.search(r'https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/(\d+)', message.content)
                 if not match: return
                 artwork_id = match.group(1)
                 
-                # 埋め込み修正のため、phixivのリンクをチャンネルに投稿
                 mirror_url = f"https://www.phixiv.net/artworks/{artwork_id}"
                 await message.channel.send(mirror_url)
 
-                # phixivのAPIを利用して画像URLを直接取得
                 api_url = f"https://www.phixiv.net/api/info?id={artwork_id}"
                 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
                 
@@ -180,59 +187,82 @@ async def process_media_link(message, url_type):
                         async with session.get(api_url, timeout=15) as resp:
                             if resp.status != 200:
                                 print(f"phixiv API returned status {resp.status} for ID {artwork_id}")
-                                return # 失敗時はサイレントに終了
+                                # ★★★★★ エラーメッセージをチャンネルに送信 ★★★★★
+                                await message.channel.send(f"APIエラーが発生しました (Status: {resp.status})。サービスがダウンしている可能性があります。", reference=message)
+                                await message.add_reaction(error_emoji)
+                                return
 
                             data = await resp.json()
-                            
-                            # レスポンスがリスト形式の場合、最初の要素を取得 (APIの仕様変更に対応)
                             if isinstance(data, list) and data:
                                 data = data[0]
 
-                            # NSFWチェック: レポートの推奨事項に基づき、SFWチャンネルでのNSFWコンテンツ表示を防止
                             is_r18 = any(tag.get('name') == 'R-18' for tag in data.get('tags', []) if isinstance(tag, dict))
                             if is_r18 and not message.channel.is_nsfw():
                                 print(f"Blocked R-18 content in SFW channel for ID {artwork_id}")
                                 await message.channel.send("この作品はR-18指定のため、NSFWチャンネル以外では画像を取得できません。", reference=message, delete_after=10)
+                                await message.add_reaction(error_emoji)
                                 return
 
-                            # 画像URLの抽出: phixivのAPIレスポンスから全画像URLを取得
-                            # 'urls'フィールドから'original'のURLを取得
                             if 'urls' in data and isinstance(data['urls'], dict):
-                                for i in range(data.get('page_count', 1)):
-                                    # 'p{i}' の形式でURLを探す
-                                    page_key = f"p{i}"
-                                    if page_key in data['urls'] and 'original' in data['urls'][page_key]:
-                                        image_urls.append(data['urls'][page_key]['original'])
-                                    # フォールバックとして 'original' を直接探す
-                                    elif 'original' in data['urls']:
-                                        # 複数枚の場合、URLがテンプレート形式になっていることがある
-                                        original_url = data['urls']['original']
-                                        if '{page_num}' in original_url:
-                                            image_urls.append(original_url.format(page_num=i+1))
-                                        elif '_p0' in original_url:
-                                             image_urls.append(original_url.replace('_p0', f'_p{i}'))
+                                page_count = data.get('page_count', 1)
+                                original_url_template = data['urls'].get('original')
+
+                                if original_url_template:
+                                    for i in range(page_count):
+                                        # テンプレート形式のURLを正しく処理
+                                        if '_p0' in original_url_template:
+                                            image_urls.append(original_url_template.replace('_p0', f'_p{i}'))
+                                        # 1枚絵の場合やテンプレート形式でない場合
+                                        elif page_count == 1 and i == 0:
+                                            image_urls.append(original_url_template)
+                                        # その他の複数枚形式（_p{i} 以外）には非対応だが、将来の拡張のためログを残す
                                         else:
-                                            if i == 0: # 1枚絵の場合
-                                                image_urls.append(original_url)
+                                            print(f"Unsupported multi-page format for {artwork_id}")
+                                else:
+                                     # 'p{i}' の形式でURLを探すフォールバック
+                                    for i in range(page_count):
+                                        page_key = f"p{i}"
+                                        if page_key in data['urls'] and 'original' in data['urls'][page_key]:
+                                            image_urls.append(data['urls'][page_key]['original'])
 
 
+                    except asyncio.TimeoutError:
+                        print(f"Timeout fetching from phixiv API for ID {artwork_id}")
+                        await message.channel.send("APIへの接続がタイムアウトしました。サービスが混み合っている可能性があります。", reference=message)
+                        await message.add_reaction(error_emoji)
+                        return
                     except Exception as e:
                         print(f"Error fetching from phixiv API for ID {artwork_id}: {e}")
                         traceback.print_exc()
+                        await message.channel.send(f"APIからのデータ取得中にエラーが発生しました: `{type(e).__name__}`", reference=message)
+                        await message.add_reaction(error_emoji)
                         return
-            # ★★★★★ ここまでが修正箇所 ★★★★★
 
-            if image_urls:
-                await download_and_send_images(message.author, image_urls, message.channel, message.author)
-            else:
-                # pixivの場合はAPIエラーで早期リターンするため、このメッセージは主にtwitter用
-                if url_type == 'twitter':
-                    await message.channel.send("このリンクからは画像を見つけられませんでした。")
+        # ★★★★★ ここからが修正箇所 ★★★★★
+        if image_urls:
+            await download_and_send_images(message.author, image_urls, message.channel, message.author)
+        else:
+            # 処理したが画像が見つからなかった場合
+            await message.channel.send("APIから画像URLを取得できませんでした。作品が存在しないか、非公開の可能性があります。", reference=message)
+            await message.add_reaction(error_emoji)
+        # ★★★★★ ここまでが修正箇所 ★★★★★
 
     except Exception as e:
         print(f"予期せぬエラーが発生しました: {e}")
         traceback.print_exc()
         await message.channel.send(f"予期せぬエラーが発生しました: `{type(e).__name__}`")
+        try:
+            await message.add_reaction(error_emoji)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+    finally:
+        # ★★★★★ 処理完了後、リアクションを削除 ★★★★★
+        try:
+            await message.remove_reaction(processing_emoji, client.user)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+        # ★★★★★ ここまでが修正箇所 ★★★★★
+
 
 async def process_embed_images(message, embeds):
     image_urls = []
@@ -249,14 +279,12 @@ async def process_embed_images(message, embeds):
 
 def perform_gacha_draw(guaranteed=False):
     weights = GACHA_WEIGHTS_GUARANTEED if guaranteed else GACHA_WEIGHTS_NORMAL
-    # random.choicesはリストを返すため、[0]で要素を取り出す
     chosen_category = random.choices(GACHA_ITEMS, weights=weights, k=1)[0]
     return random.choice(chosen_category)
 
 async def send_gacha_results(message):
     results = [perform_gacha_draw() for _ in range(9)]
     results.append(perform_gacha_draw(guaranteed=True))
-    # 結果を5つずつに分けて送信
     await message.channel.send(f"{' '.join(results[0:5])}\n{' '.join(results[5:10])}")
 
 def get_random_shot():
@@ -277,7 +305,6 @@ async def on_message(message):
     if message.author == client.user or message.author.bot:
         return
     
-    # < > で囲まれたURLは埋め込み抑制の意図なので無視する (レポートの推奨事項)
     if re.search(r'<\s*https?://[^>]+>', message.content):
         return
 
