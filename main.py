@@ -87,7 +87,6 @@ async def download_and_send_images(destination, image_urls, fallback_channel, me
 
     files_to_send = []
     try:
-        # pixiv.re からダウンロードするため、Refererヘッダーを付与
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
             'Referer': 'https://www.pixiv.net/'
@@ -105,13 +104,9 @@ async def download_and_send_images(destination, image_urls, fallback_channel, me
                             filename = os.path.basename(img_url.split('?')[0])
                             files_to_send.append(discord.File(io.BytesIO(image_data), filename=filename))
                         else:
-                            # ★★★★★ ここからが修正箇所 ★★★★★
-                            # エラーメッセージに失敗したURLを追加
                             await fallback_channel.send(f"画像 {i+1} のダウンロードに失敗しました。 (Status: {img_resp.status})\nURL: {img_url}")
                 except Exception as dl_error:
-                    # エラーメッセージに失敗したURLを追加
                     await fallback_channel.send(f"画像 {i+1} の処理中にエラーが発生しました: `{dl_error}`\nURL: {img_url}")
-                    # ★★★★★ ここまでが修正箇所 ★★★★★
     except Exception as e:
         print(f"画像ダウンロード中に予期せぬエラーが発生しました: {e}")
         traceback.print_exc()
@@ -191,7 +186,9 @@ async def process_media_link(message, url_type):
                             if not proxy_urls:
                                 await message.channel.send("APIから画像URLが見つかりませんでした。")
                                 return
-
+                            
+                            # ★★★★★ ここからが拡張子問題を解決する修正箇所 ★★★★★
+                            # 正規表現でURLから必要な情報をすべて抽出
                             pattern = re.compile(r'/img/(\d{4}/\d{2}/\d{2}/\d{2}/\d{2}/\d{2})/(\d+)_p(\d+)(?:_master\d+)?\.(jpg|png|gif)')
 
                             for proxy_url in proxy_urls:
@@ -200,12 +197,15 @@ async def process_media_link(message, url_type):
                                     date_path = url_match.group(1)
                                     illust_id = url_match.group(2)
                                     page_num = url_match.group(3)
+                                    # 正しい拡張子を抽出
                                     extension = url_match.group(4)
                                     
+                                    # 正しい拡張子を使ってpixiv.reのURLを構築
                                     original_url = f"https://i.pixiv.re/img-original/img/{date_path}/{illust_id}_p{page_num}.{extension}"
                                     image_urls.append(original_url)
                                 else:
                                     print(f"Could not parse proxy URL: {proxy_url}")
+                            # ★★★★★ ここまでが修正箇所 ★★★★★
                             
                             if not image_urls:
                                 await message.channel.send("高画質画像URLの解析に失敗しました。")
