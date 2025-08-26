@@ -28,7 +28,6 @@ intents.message_content = True
 intents.reactions = True
 client = discord.Client(intents=intents)
 
-# (SHOT_TYPE, STICKER, GACHA_* 定数は変更ないため省略)
 SHOT_TYPE = (
     (4, "紅霊夢A", "紅霊夢B", "紅魔理沙A", "紅魔理沙B"),
     (6, "妖霊夢A", "妖霊夢B", "妖魔理沙A", "妖魔理沙B", "妖咲夜A", "妖咲夜B"),
@@ -59,7 +58,7 @@ GACHA_WEIGHTS_NORMAL = [78.5, 18.5, 2.3, 0.7]
 GACHA_WEIGHTS_GUARANTEED = [0, 18.5 + 78.5, 2.3, 0.7]
 
 # -----------------------------------------------------------------------------
-# UIコンポーネント (★★★★★ 削除ボタンの処理を修正 ★★★★★)
+# UIコンポーネント
 # -----------------------------------------------------------------------------
 class DeleteButtonView(discord.ui.View):
     def __init__(self, *, timeout=180):
@@ -67,19 +66,16 @@ class DeleteButtonView(discord.ui.View):
 
     @discord.ui.button(label="削除", style=discord.ButtonStyle.danger, emoji="🗑️")
     async def delete_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # ★★★★★ 先にインタラクションに応答して、エラーを防ぐ ★★★★★
         await interaction.response.defer()
         try:
-            # その後でメッセージを削除
             await interaction.message.delete()
         except discord.HTTPException as e:
-            # エラーが発生した場合はログに出力するだけ
             print(f"Failed to delete message: {e}")
 
 # -----------------------------------------------------------------------------
 # ヘルパー関数
 # -----------------------------------------------------------------------------
-async def download_and_send_images(destination, image_urls, fallback_channel, mention_user):
+async def download_and_send_images(destination, image_urls, fallback_channel, mention_user, referer=None):
     """
     URLリストから画像をダウンロードし、指定された宛先（DM）に送信を試みる。
     失敗した場合はフォールバック用のチャンネルに送信する。
@@ -90,6 +86,10 @@ async def download_and_send_images(destination, image_urls, fallback_channel, me
     files_to_send = []
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
+        # ★★★★★ Refererヘッダーを追加する修正 ★★★★★
+        if referer:
+            headers['Referer'] = referer
+            
         async with aiohttp.ClientSession(headers=headers) as session:
             MAX_FILE_SIZE = 24 * 1024 * 1024
             for i, img_url in enumerate(image_urls):
@@ -117,7 +117,9 @@ async def download_and_send_images(destination, image_urls, fallback_channel, me
 
     try:
         view = DeleteButtonView()
+        # 一度に送信できるファイル数には限りがあるため、1つずつ送信する
         for file in files_to_send:
+             # discord.pyのバージョンによっては、files=[file] のようにリストで渡す必要があるかもしれません
             await destination.send(file=file, view=view)
         print(f"Sent {len(files_to_send)} images to {destination}.")
     except discord.Forbidden:
@@ -157,35 +159,60 @@ async def process_media_link(message, url_type):
                             for media in media_list:
                                 image_urls.append(media['url'])
             
+            # ★★★★★ ここからが修正されたpixivの処理 ★★★★★
             elif url_type == 'pixiv':
                 match = re.search(r'https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/(\d+)', message.content)
                 if not match: return
                 artwork_id = match.group(1)
-                mirror_url = f"https://www.phixiv.net/artworks/{artwork_id}"
-                await message.channel.send(mirror_url)
+                
+                # phixivの作品ページURL
+                page_url = f"https://www.phixiv.net/artworks/{artwork_id}"
+                
+                # 先にミラーサイトのURLを送信
+                await message.channel.send(page_url)
 
-                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36', 'Referer': 'https://www.pixiv.net/'}
-                async with aiohttp.ClientSession(headers=headers) as session:
-                    for i in range(1, 21):
-                        found_image_for_this_page = False
-                        for ext in ['.jpg', '.png', '.gif']:
-                            img_url = f"https://pxiv.cat/{artwork_id}-{i}{ext}"
-                            try:
-                                async with session.head(img_url, timeout=7, allow_redirects=True) as img_resp:
-                                    if img_resp.status == 200:
-                                        final_url = str(img_resp.url)
-                                        image_urls.append(final_url)
-                                        found_image_for_this_page = True
-                                        break
-                            except Exception:
-                                pass
-                        if not found_image_for_this_page:
-                            break
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(page_url) as resp:
+                            if resp.status != 200:
+                                await message.channel.send(f"ページの取得に失敗しました。(Status: {resp.status})")
+                                return
+                            
+                            html_content = await resp.text()
+
+                            # 正規表現でJavaScriptの配列部分を抽出
+                            js_match = re.search(r'window\.PHIXIV_IMAGES\s*=\s*(\[.*?\]);', html_content)
+                            
+                            if js_match:
+                                urls_json_str = js_match.group(1)
+                                image_urls = json.loads(urls_json_str)
+                            else:
+                                # パターンが見つからない場合、og:imageタグから1枚目だけ取得を試みる
+                                og_image_match = re.search(r'<meta property="og:image" content="(.*?)">', html_content)
+                                if og_image_match:
+                                    image_urls.append(og_image_match.group(1))
+
+                except Exception as e:
+                    print(f"スクレイピング中にエラーが発生しました: {e}")
+                    traceback.print_exc()
+                    await message.channel.send(f"画像の抽出中にエラーが発生しました: `{type(e).__name__}`")
+                    return
+            # ★★★★★ pixivの処理ここまで ★★★★★
 
             if image_urls:
-                await download_and_send_images(message.author, image_urls, message.channel, message.author)
-            else:
-                await message.channel.send("このリンクからは画像を見つけられませんでした。")
+                # ★★★★★ download関数を呼び出す際に、Refererを渡す ★★★★★
+                referer = "https://www.pixiv.net/" if url_type == 'pixiv' else None
+                await download_and_send_images(
+                    destination=message.author, 
+                    image_urls=image_urls, 
+                    fallback_channel=message.channel, 
+                    mention_user=message.author,
+                    referer=referer
+                )
+            # Twitter/Pixivで画像が見つからなかった場合のメッセージは各処理ブロック内で送信
+            elif url_type == 'pixiv':
+                 await message.channel.send("このリンクからは画像を見つけられませんでした。")
+
 
     except Exception as e:
         print(f"予期せぬエラーが発生しました: {e}")
@@ -326,16 +353,22 @@ def run_bot():
         print("DISCORD_BOT_TOKENが設定されていません。")
         return
 
+    # asyncioイベントループの適切な処理
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
     
-    loop.create_task(client.start(bot_token))
-    
-    if not loop.is_running():
-        loop.run_forever()
+    # loop.create_task() は既に実行中のループに追加するためのもの
+    # ここでは client.start() でループを開始・ブロックさせるのが一般的
+    # run_forever()は不要
+    try:
+        loop.run_until_complete(client.start(bot_token))
+    except KeyboardInterrupt:
+        loop.run_until_complete(client.close())
+    finally:
+        loop.close()
 
 
 bot_thread = threading.Thread(target=run_bot)
