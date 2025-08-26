@@ -219,39 +219,21 @@ async def process_media_link(message, url_type):
                                 return
 
                             # ★★★★★ ここからが修正箇所 ★★★★★
-                            # 複数ページ作品のURLをより堅牢に取得するためのロジック改善
+                            # 複数ページ作品のURLをより堅牢に取得するための、シンプル化されたロジック
                             if 'urls' in artwork_data and isinstance(artwork_data['urls'], dict):
                                 page_count = artwork_data.get('page_count', 1)
                                 urls_dict = artwork_data['urls']
-                                
-                                # 複数ページの作品を優先的に処理
-                                if page_count > 1:
-                                    # 方法1: p0, p1, ... のキーから直接URLを取得 (より信頼性が高い可能性がある)
-                                    temp_urls = []
-                                    for i in range(page_count):
-                                        page_key = f"p{i}"
-                                        page_data = urls_dict.get(page_key)
-                                        if isinstance(page_data, dict) and 'original' in page_data:
-                                            temp_urls.append(page_data['original'])
-                                    
-                                    # すべてのページのURLが取得できた場合のみ採用
-                                    if len(temp_urls) == page_count:
-                                        image_urls.extend(temp_urls)
+                                original_url_template = urls_dict.get('original')
+
+                                if original_url_template:
+                                    # 複数ページで、かつ標準的な `_p0` 形式のURLの場合
+                                    if page_count > 1 and '_p0' in original_url_template:
+                                        for i in range(page_count):
+                                            image_urls.append(original_url_template.replace('_p0', f'_p{i}'))
+                                    # 単一ページ、または非標準的なURL形式の場合
                                     else:
-                                        # 方法2: 方法1が失敗した場合、_p0テンプレートの置換を試みる
-                                        original_url_template = urls_dict.get('original')
-                                        if original_url_template and '_p0' in original_url_template:
-                                            for i in range(page_count):
-                                                image_urls.append(original_url_template.replace('_p0', f'_p{i}'))
-                                        # どちらの方法でも全ページ取得できなかった場合の警告
-                                        elif image_urls: # 一部だけでも取得できていれば警告
-                                            print(f"Warning: Could not fetch all pages for multi-page work (ID: {artwork_id}). API response might be incomplete.")
-                                
-                                # 単一ページの作品、または複数ページ処理が失敗した場合のフォールバック
-                                if not image_urls:
-                                    original_url = urls_dict.get('original')
-                                    if original_url:
-                                        image_urls.append(original_url)
+                                        # 少なくとも1枚目の画像は取得する
+                                        image_urls.append(original_url_template)
                             # ★★★★★ ここまでが修正箇所 ★★★★★
 
                     except asyncio.TimeoutError:
