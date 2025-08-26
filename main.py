@@ -140,7 +140,6 @@ async def download_and_send_images(destination, image_urls, fallback_channel, me
 # メインの処理関数
 # -----------------------------------------------------------------------------
 async def process_media_link(message, url_type):
-    # ★★★★★ ここからが修正箇所 ★★★★★
     processing_emoji = "🤔"
     error_emoji = "⚠️"
     try:
@@ -148,7 +147,6 @@ async def process_media_link(message, url_type):
     except (discord.Forbidden, discord.HTTPException):
         # リアクションが付けられなくても処理は続行
         pass
-    # ★★★★★ ここまでが修正箇所 ★★★★★
 
     image_urls = []
     
@@ -187,7 +185,6 @@ async def process_media_link(message, url_type):
                         async with session.get(api_url, timeout=15) as resp:
                             if resp.status != 200:
                                 print(f"phixiv API returned status {resp.status} for ID {artwork_id}")
-                                # ★★★★★ エラーメッセージをチャンネルに送信 ★★★★★
                                 await message.channel.send(f"APIエラーが発生しました (Status: {resp.status})。サービスがダウンしている可能性があります。", reference=message)
                                 await message.add_reaction(error_emoji)
                                 return
@@ -203,28 +200,28 @@ async def process_media_link(message, url_type):
                                 await message.add_reaction(error_emoji)
                                 return
 
+                            # ★★★★★ ここからが修正箇所 ★★★★★
                             if 'urls' in data and isinstance(data['urls'], dict):
                                 page_count = data.get('page_count', 1)
-                                original_url_template = data['urls'].get('original')
+                                urls_dict = data['urls']
+                                original_url_template = urls_dict.get('original')
 
                                 if original_url_template:
-                                    for i in range(page_count):
-                                        # テンプレート形式のURLを正しく処理
-                                        if '_p0' in original_url_template:
+                                    if page_count > 1 and '_p0' in original_url_template:
+                                        # 標準的な複数ページの作品
+                                        for i in range(page_count):
                                             image_urls.append(original_url_template.replace('_p0', f'_p{i}'))
-                                        # 1枚絵の場合やテンプレート形式でない場合
-                                        elif page_count == 1 and i == 0:
-                                            image_urls.append(original_url_template)
-                                        # その他の複数枚形式（_p{i} 以外）には非対応だが、将来の拡張のためログを残す
-                                        else:
-                                            print(f"Unsupported multi-page format for {artwork_id}")
+                                    else:
+                                        # 1ページの作品、または不明な形式の複数ページ作品
+                                        # どちらの場合でも、最初の画像としてURLをそのまま追加するのが最善
+                                        image_urls.append(original_url_template)
                                 else:
-                                     # 'p{i}' の形式でURLを探すフォールバック
+                                    # 'original'キーが見つからない場合のフォールバック
                                     for i in range(page_count):
                                         page_key = f"p{i}"
-                                        if page_key in data['urls'] and 'original' in data['urls'][page_key]:
-                                            image_urls.append(data['urls'][page_key]['original'])
-
+                                        if page_key in urls_dict and 'original' in urls_dict[page_key]:
+                                            image_urls.append(urls_dict[page_key]['original'])
+                            # ★★★★★ ここまでが修正箇所 ★★★★★
 
                     except asyncio.TimeoutError:
                         print(f"Timeout fetching from phixiv API for ID {artwork_id}")
@@ -238,14 +235,12 @@ async def process_media_link(message, url_type):
                         await message.add_reaction(error_emoji)
                         return
 
-        # ★★★★★ ここからが修正箇所 ★★★★★
         if image_urls:
             await download_and_send_images(message.author, image_urls, message.channel, message.author)
         else:
             # 処理したが画像が見つからなかった場合
             await message.channel.send("APIから画像URLを取得できませんでした。作品が存在しないか、非公開の可能性があります。", reference=message)
             await message.add_reaction(error_emoji)
-        # ★★★★★ ここまでが修正箇所 ★★★★★
 
     except Exception as e:
         print(f"予期せぬエラーが発生しました: {e}")
@@ -256,12 +251,11 @@ async def process_media_link(message, url_type):
         except (discord.Forbidden, discord.HTTPException):
             pass
     finally:
-        # ★★★★★ 処理完了後、リアクションを削除 ★★★★★
+        # 処理完了後、リアクションを削除
         try:
             await message.remove_reaction(processing_emoji, client.user)
         except (discord.Forbidden, discord.HTTPException):
             pass
-        # ★★★★★ ここまでが修正箇所 ★★★★★
 
 
 async def process_embed_images(message, embeds):
