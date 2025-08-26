@@ -54,12 +54,12 @@ GACHA_TRIGGER = "<:img:1332781427498029106>"
 GACHA_STAR_1 = ("<:JYUNYA:921397676166234162>", "<:maiahi:855369574819168266>", "<:emoji_33:901741259260039239>")
 GACHA_STAR_2 = ("<:beerjunya:859283357841489950>",)
 GACHA_STAR_3 = ("<:rainbowjunya2:930782219490983937>",)
-GACHA_ITEMS = [GACHA_STAR_1, GACHA_STAR_2, GACHA_STAR_3, STICKER]
+GACHA_ITEMS =
 GACHA_WEIGHTS_NORMAL = [78.5, 18.5, 2.3, 0.7]
 GACHA_WEIGHTS_GUARANTEED = [0, 18.5 + 78.5, 2.3, 0.7]
 
 # -----------------------------------------------------------------------------
-# UIコンポーネント (★★★★★ 削除ボタンの処理を修正 ★★★★★)
+# UIコンポーネント
 # -----------------------------------------------------------------------------
 class DeleteButtonView(discord.ui.View):
     def __init__(self, *, timeout=180):
@@ -67,13 +67,10 @@ class DeleteButtonView(discord.ui.View):
 
     @discord.ui.button(label="削除", style=discord.ButtonStyle.danger, emoji="🗑️")
     async def delete_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # ★★★★★ 先にインタラクションに応答して、エラーを防ぐ ★★★★★
         await interaction.response.defer()
         try:
-            # その後でメッセージを削除
             await interaction.message.delete()
         except discord.HTTPException as e:
-            # エラーが発生した場合はログに出力するだけ
             print(f"Failed to delete message: {e}")
 
 # -----------------------------------------------------------------------------
@@ -87,9 +84,13 @@ async def download_and_send_images(destination, image_urls, fallback_channel, me
     if not image_urls:
         return
 
-    files_to_send = []
+    files_to_send =
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
+        # Pixivからの画像取得にはRefererが必要な場合があるためヘッダーに含める
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+            'Referer': 'https://www.pixiv.net/'
+        }
         async with aiohttp.ClientSession(headers=headers) as session:
             MAX_FILE_SIZE = 24 * 1024 * 1024
             for i, img_url in enumerate(image_urls):
@@ -100,7 +101,7 @@ async def download_and_send_images(destination, image_urls, fallback_channel, me
                             if len(image_data) > MAX_FILE_SIZE:
                                 await fallback_channel.send(f"画像 {i+1} はサイズが大きすぎるため、送信できません。({len(image_data) / 1024 / 1024:.2f}MB)")
                                 continue
-                            filename = os.path.basename(img_url.split('?')[0])
+                            filename = os.path.basename(img_url.split('?'))
                             files_to_send.append(discord.File(io.BytesIO(image_data), filename=filename))
                         else:
                             await fallback_channel.send(f"画像 {i+1} のダウンロードに失敗しました。 (Status: {img_resp.status})")
@@ -117,16 +118,19 @@ async def download_and_send_images(destination, image_urls, fallback_channel, me
 
     try:
         view = DeleteButtonView()
-        for file in files_to_send:
-            await destination.send(file=file, view=view)
+        # 10ファイルごとにメッセージを分割して送信
+        for i in range(0, len(files_to_send), 10):
+            chunk = files_to_send[i:i+10]
+            await destination.send(files=chunk, view=view)
         print(f"Sent {len(files_to_send)} images to {destination}.")
     except discord.Forbidden:
         print(f"Failed to send DM to {destination}. Sending to channel instead.")
         await fallback_channel.send(
             f"{mention_user.mention} DMに画像を送信できませんでした。プライバシー設定を確認してください。\n代わりにこのチャンネルに画像を投稿します。"
         )
-        for file in files_to_send:
-            await fallback_channel.send(file=file)
+        for i in range(0, len(files_to_send), 10):
+            chunk = files_to_send[i:i+10]
+            await fallback_channel.send(files=chunk)
     except Exception as e:
         print(f"An error occurred while sending files: {e}")
         traceback.print_exc()
@@ -136,7 +140,7 @@ async def download_and_send_images(destination, image_urls, fallback_channel, me
 # メインの処理関数
 # -----------------------------------------------------------------------------
 async def process_media_link(message, url_type):
-    image_urls = []
+    image_urls =
     
     try:
         async with message.channel.typing():
@@ -153,38 +157,64 @@ async def process_media_link(message, url_type):
                     async with session.get(api_url) as resp:
                         if resp.status == 200:
                             data = await resp.json()
-                            media_list = data.get('tweet', {}).get('media', {}).get('all', [])
+                            media_list = data.get('tweet', {}).get('media', {}).get('all',)
                             for media in media_list:
                                 image_urls.append(media['url'])
             
+            # ★★★★★ ここからが修正箇所 ★★★★★
             elif url_type == 'pixiv':
                 match = re.search(r'https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/(\d+)', message.content)
                 if not match: return
                 artwork_id = match.group(1)
+                
+                # 埋め込み修正のため、phixivのリンクをチャンネルに投稿
                 mirror_url = f"https://www.phixiv.net/artworks/{artwork_id}"
                 await message.channel.send(mirror_url)
 
-                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36', 'Referer': 'https://www.pixiv.net/'}
+                # phixivのAPIを利用して画像URLを直接取得
+                api_url = f"https://phixiv.net/api/info?id={artwork_id}"
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
+                
                 async with aiohttp.ClientSession(headers=headers) as session:
-                    for i in range(1, 21):
-                        found_image_for_this_page = False
-                        for ext in ['.jpg', '.png', '.gif']:
-                            img_url = f"https://pxiv.cat/{artwork_id}-{i}{ext}"
-                            try:
-                                async with session.head(img_url, timeout=7, allow_redirects=True) as img_resp:
-                                    if img_resp.status == 200:
-                                        final_url = str(img_resp.url)
-                                        image_urls.append(final_url)
-                                        found_image_for_this_page = True
-                                        break
-                            except Exception:
-                                pass
-                        if not found_image_for_this_page:
-                            break
+                    try:
+                        async with session.get(api_url, timeout=15) as resp:
+                            if resp.status!= 200:
+                                print(f"phixiv API returned status {resp.status} for ID {artwork_id}")
+                                return # 失敗時はサイレントに終了
+
+                            data = await resp.json()
+
+                            # NSFWチェック: レポートの推奨事項に基づき、SFWチャンネルでのNSFWコンテンツ表示を防止
+                            is_r18 = any(tag.get('name') == 'R-18' for tag in data.get('tags',) if isinstance(tag, dict))
+                            if is_r18 and not message.channel.is_nsfw():
+                                print(f"Blocked R-18 content in SFW channel for ID {artwork_id}")
+                                await message.channel.send("この作品はR-18指定のため、画像取得をスキップしました。", reference=message, delete_after=10)
+                                return
+
+                            # 画像URLの抽出: phixivのAPIレスポンスから全画像URLを取得
+                            # APIのレスポンス構造を仮定: 'meta_pages' (複数枚) > 'image_urls' > 'original'
+                            # または単一画像の場合 'url'
+                            if 'meta_pages' in data and data['meta_pages']:
+                                for page in data['meta_pages']:
+                                    if page.get('image_urls', {}).get('original'):
+                                        image_urls.append(page['image_urls']['original'])
+                            elif 'url' in data:
+                                image_urls.append(data['url'])
+                            
+                            # フォールバックとして、単純なURLリストもチェック
+                            if not image_urls and isinstance(data.get('urls'), list):
+                                image_urls.extend(data['urls'])
+
+                    except Exception as e:
+                        print(f"Error fetching from phixiv API for ID {artwork_id}: {e}")
+                        traceback.print_exc()
+                        return
+            # ★★★★★ ここまでが修正箇所 ★★★★★
 
             if image_urls:
                 await download_and_send_images(message.author, image_urls, message.channel, message.author)
             else:
+                # pixivの場合はAPIエラーで早期リターンするため、このメッセージは主にtwitter用
                 await message.channel.send("このリンクからは画像を見つけられませんでした。")
 
     except Exception as e:
@@ -193,7 +223,7 @@ async def process_media_link(message, url_type):
         await message.channel.send(f"予期せぬエラーが発生しました: `{type(e).__name__}`")
 
 async def process_embed_images(message, embeds):
-    image_urls = []
+    image_urls =
     for embed in embeds:
         if embed.image and embed.image.url:
             image_urls.append(embed.image.url)
@@ -207,7 +237,7 @@ async def process_embed_images(message, embeds):
 
 def perform_gacha_draw(guaranteed=False):
     weights = GACHA_WEIGHTS_GUARANTEED if guaranteed else GACHA_WEIGHTS_NORMAL
-    chosen_category = random.choices(GACHA_ITEMS, weights=weights, k=1)[0]
+    chosen_category = random.choices(GACHA_ITEMS, weights=weights, k=1)
     return random.choice(chosen_category)
 
 async def send_gacha_results(message):
@@ -233,6 +263,10 @@ async def on_message(message):
     if message.author == client.user or message.author.bot:
         return
     
+    # < > で囲まれたURLは埋め込み抑制の意図なので無視する
+    if re.search(r'<\s*https?://[^>]+>', message.content):
+        return
+
     if message.content.lower() in ["再送信", "download"]:
         if message.reference and message.reference.message_id:
             try:
@@ -297,7 +331,7 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     if not message.embeds:
         return
 
-    image_urls = []
+    image_urls =
     for embed in message.embeds:
         if embed.image and embed.image.url:
             image_urls.append(embed.image.url)
