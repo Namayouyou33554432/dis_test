@@ -113,6 +113,7 @@ async def download_and_send_images(destination, image_urls, fallback_channel, me
         for file in files_to_send:
             await destination.send(file=file, view=view)
         print(f"Sent {len(files_to_send)} images to {destination}.")
+        return True # DM送信成功
     except discord.Forbidden:
         print(f"Failed to send DM to {destination}. Sending to channel instead.")
         await fallback_channel.send(
@@ -120,10 +121,12 @@ async def download_and_send_images(destination, image_urls, fallback_channel, me
         )
         for file in files_to_send:
             await fallback_channel.send(file=file)
+        return False # DM送信失敗
     except Exception as e:
         print(f"An error occurred while sending files: {e}")
         traceback.print_exc()
         await fallback_channel.send(f"画像の送信中に予期せぬエラーが発生しました: `{type(e).__name__}`")
+        return False # DM送信失敗
 
 # -----------------------------------------------------------------------------
 # メインの処理関数
@@ -150,29 +153,41 @@ async def process_media_link(message, url_type):
                             for media in media_list:
                                 image_urls.append(media['url'])
             
-            # ★★★★★ Pixivの処理を埋め込みから取得する方式に変更 ★★★★★
             elif url_type == 'pixiv':
                 match = re.search(r'https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/(\d+)', message.content)
                 if not match: return
-                mirror_url = f"https://www.phixiv.net/artworks/{match.group(1)}"
-                
-                sent_message = await message.channel.send(mirror_url)
-                await asyncio.sleep(3) # Discordが埋め込みを生成するのを待つ
+                artwork_id = match.group(1)
+                mirror_url = f"https://www.phixiv.net/artworks/{artwork_id}"
+                await message.channel.send(mirror_url)
 
-                try:
-                    # メッセージを再取得して、更新された埋め込み情報を確認する
-                    updated_message = await message.channel.fetch_message(sent_message.id)
-                    if updated_message.embeds:
-                        for embed in updated_message.embeds:
-                            if embed.image and embed.image.url:
-                                image_urls.append(embed.image.url)
-                except Exception as e:
-                    print(f"Could not process embed for {mirror_url}: {e}")
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36', 'Referer': 'https://www.pixiv.net/'}
+                async with aiohttp.ClientSession(headers=headers) as session:
+                    for i in range(1, 21):
+                        found_image_for_this_page = False
+                        for ext in ['.jpg', '.png', '.gif']:
+                            img_url = f"https://pxiv.cat/{artwork_id}-{i}{ext}"
+                            try:
+                                async with session.head(img_url, timeout=7, allow_redirects=True) as img_resp:
+                                    if img_resp.status == 200:
+                                        final_url = str(img_resp.url)
+                                        image_urls.append(final_url)
+                                        found_image_for_this_page = True
+                                        break
+                            except Exception:
+                                pass
+                        if not found_image_for_this_page:
+                            break
 
             if image_urls:
                 await download_and_send_images(message.author, image_urls, message.channel, message.author)
             else:
-                await message.channel.send("このリンクからは画像を見つけられませんでした。手動で「再送信」と返信してみてください。")
+                await message.channel.send("このリンクからは画像を見つけられませんでした。")
+
+        # ★★★★★ 処理完了後にリアクションを付ける ★★★★★
+        try:
+            await message.add_reaction('❤️')
+        except discord.HTTPException:
+            pass # リアクションに失敗しても気にしない
 
     except Exception as e:
         print(f"予期せぬエラーが発生しました: {e}")
@@ -297,12 +312,21 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     except discord.NotFound:
         return
 
-    asyncio.create_task(download_and_send_images(
+    # リアクションの場合は、元のチャンネルにフォールバックメッセージを送る
+    success = await download_and_send_images(
         destination=user,
         image_urls=image_urls,
         fallback_channel=channel,
         mention_user=user
-    ))
+    )
+    
+    # ★★★★★ リアクションでの処理完了後にもリアクションを付ける ★★★★★
+    if success:
+        try:
+            # リアクションされたメッセージにリアクションを付ける
+            await message.add_reaction(payload.emoji)
+        except discord.HTTPException:
+            pass # 失敗しても気にしない
 
 # -----------------------------------------------------------------------------
 # 並列起動
