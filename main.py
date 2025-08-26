@@ -177,7 +177,7 @@ async def process_media_link(message, url_type):
                 except Exception as e:
                     print(f"Could not process embed for {mirror_url}: {e}")
 
-            # ★★★★★ ユーザー設定に応じて送信先を決定 ★★★★★
+            # ユーザー設定に応じて送信先を決定
             if image_urls:
                 user_id = message.author.id
                 send_preference = user_settings.get(user_id, 'dm') # デフォルトはDM
@@ -243,7 +243,6 @@ async def on_message(message):
     if message.author == client.user or message.author.bot:
         return
     
-    # ★★★★★ DM送信設定を切り替えるコマンドを追加 ★★★★★
     if message.content.lower() == '!dm':
         user_id = message.author.id
         current_setting = user_settings.get(user_id, 'dm') # デフォルトは 'dm'
@@ -317,6 +316,10 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     except (discord.NotFound, discord.Forbidden):
         return
 
+    # ★★★★★ ボット自身のメッセージへのリアクションのみを処理するよう修正 ★★★★★
+    if message.author.id != client.user.id:
+        return
+
     if not message.embeds:
         return
 
@@ -333,7 +336,6 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     except discord.NotFound:
         return
     
-    # リアクションの場合は、リアクションしたユーザーの設定に従う
     send_preference = user_settings.get(user.id, 'dm')
     destination = user if send_preference == 'dm' else channel
 
