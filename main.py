@@ -105,9 +105,13 @@ async def download_and_send_images(destination, image_urls, fallback_channel, me
                             filename = os.path.basename(img_url.split('?')[0])
                             files_to_send.append(discord.File(io.BytesIO(image_data), filename=filename))
                         else:
-                            await fallback_channel.send(f"画像 {i+1} のダウンロードに失敗しました。 (Status: {img_resp.status})")
+                            # ★★★★★ ここからが修正箇所 ★★★★★
+                            # エラーメッセージに失敗したURLを追加
+                            await fallback_channel.send(f"画像 {i+1} のダウンロードに失敗しました。 (Status: {img_resp.status})\nURL: {img_url}")
                 except Exception as dl_error:
-                    await fallback_channel.send(f"画像 {i+1} の処理中にエラーが発生しました: `{dl_error}`")
+                    # エラーメッセージに失敗したURLを追加
+                    await fallback_channel.send(f"画像 {i+1} の処理中にエラーが発生しました: `{dl_error}`\nURL: {img_url}")
+                    # ★★★★★ ここまでが修正箇所 ★★★★★
     except Exception as e:
         print(f"画像ダウンロード中に予期せぬエラーが発生しました: {e}")
         traceback.print_exc()
@@ -167,7 +171,6 @@ async def process_media_link(message, url_type):
                             for media in media_list:
                                 image_urls.append(media['url'])
             
-            # ★★★★★ ここからがpixiv.re URLを組み立てる新しいPixiv処理 ★★★★★
             elif url_type == 'pixiv':
                 match = re.search(r'https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/(\d+)', message.content)
                 if not match: return
@@ -211,7 +214,6 @@ async def process_media_link(message, url_type):
                             print(f"phixiv API returned status {resp.status} for ID {artwork_id}")
                             await message.channel.send(f"APIエラーが発生しました (Status: {resp.status})。サービスがダウンしている可能性があります。", reference=message)
                             return
-            # ★★★★★ ここまで ★★★★★
 
             if image_urls:
                 user_id = message.author.id
