@@ -153,12 +153,10 @@ async def download_and_send_images(destination, image_url_groups, fallback_chann
 # メインの処理関数
 # -----------------------------------------------------------------------------
 async def process_media_link(message, url_type):
-    # ★★★★★ ここからがリアクション処理の修正箇所 ★★★★★
     processing_emoji = "🤔"
     success_emoji = '❤️'
 
     try:
-        # 処理開始時にリアクションを付ける
         await message.add_reaction(processing_emoji)
 
         image_url_groups = []
@@ -224,20 +222,22 @@ async def process_media_link(message, url_type):
                             return
 
             if image_url_groups:
+                # ★★★★★ ここからが送信ロジックの修正箇所 ★★★★★
                 user_id = message.author.id
                 send_preference = user_settings.get(user_id, 'channel')
                 
+                # 常にチャンネルに画像を送信
+                await download_and_send_images(message.channel, image_url_groups, message.channel, message.author)
+                
+                # DMがONの場合、追加でDMにも送信
                 if send_preference == 'dm':
-                    destination = message.author
                     if original_url:
                         try:
-                            await destination.send(f"<{original_url}>")
+                            await message.author.send(f"<{original_url}>")
                         except discord.HTTPException as e:
                             print(f"Could not send original URL to DM: {e}")
-                    await download_and_send_images(destination, image_url_groups, message.channel, message.author)
-                else:
-                    destination = message.channel
-                    await download_and_send_images(destination, image_url_groups, message.channel, message.author)
+                    await download_and_send_images(message.author, image_url_groups, message.channel, message.author)
+                # ★★★★★ ここまでが修正箇所 ★★★★★
             else:
                 await message.channel.send("このリンクからは画像を見つけられませんでした。")
 
@@ -246,16 +246,14 @@ async def process_media_link(message, url_type):
         traceback.print_exc()
         await message.channel.send(f"予期せぬエラーが発生しました: `{type(e).__name__}`")
     finally:
-        # 処理が成功しても失敗しても、最後にリアクションを更新する
         try:
             await message.remove_reaction(processing_emoji, client.user)
         except discord.HTTPException:
-            pass # リアクションが消されていてもエラーにしない
+            pass
         try:
             await message.add_reaction(success_emoji)
         except discord.HTTPException:
-            pass # メッセージが消されていてもエラーにしない
-    # ★★★★★ ここまでが修正箇所 ★★★★★
+            pass
 
 async def process_embed_images(message, embeds):
     image_url_groups = []
@@ -269,8 +267,13 @@ async def process_embed_images(message, embeds):
     
     user_id = message.author.id
     send_preference = user_settings.get(user_id, 'channel')
-    destination = message.author if send_preference == 'dm' else message.channel
-    await download_and_send_images(destination, image_url_groups, message.channel, message.author)
+    
+    # 常にチャンネルに画像を送信
+    await download_and_send_images(message.channel, image_url_groups, message.channel, message.author)
+    
+    # DMがONの場合、追加でDMにも送信
+    if send_preference == 'dm':
+        await download_and_send_images(message.author, image_url_groups, message.channel, message.author)
 
 
 def perform_gacha_draw(guaranteed=False):
@@ -394,26 +397,14 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
         return
     
     send_preference = user_settings.get(user.id, 'channel')
-    destination = user if send_preference == 'dm' else channel
-
-    success = await download_and_send_images(
-        destination=destination,
-        image_urls=image_url_groups,
-        fallback_channel=channel,
-        mention_user=user
-    )
     
-    if success:
-        try:
-            found = False
-            for reaction in message.reactions:
-                if reaction.emoji == payload.emoji and reaction.me:
-                    found = True
-                    break
-            if not found:
-                await message.add_reaction(payload.emoji)
-        except discord.HTTPException:
-            pass
+    # 常にチャンネルに画像を送信
+    await download_and_send_images(channel, image_url_groups, channel, user)
+    
+    # DMがONの場合、追加でDMにも送信
+    if send_preference == 'dm':
+        await download_and_send_images(user, image_url_groups, channel, user)
+    
 
 # -----------------------------------------------------------------------------
 # 並列起動
