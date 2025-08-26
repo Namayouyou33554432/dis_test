@@ -105,7 +105,7 @@ async def download_and_send_images(destination, image_urls, fallback_channel, me
                             filename = os.path.basename(img_url.split('?')[0])
                             files_to_send.append(discord.File(io.BytesIO(image_data), filename=filename))
                         else:
-                            await fallback_channel.send(f"画像 {i+1} のダウンロードに失敗しました。 (Status: {img_resp.status})")
+                            await fallback_channel.send(f"画像 {i+1} のダウンロードに失敗しました。 (Status: {img_resp.status}) URL: {img_url}")
                 except Exception as dl_error:
                     await fallback_channel.send(f"画像 {i+1} の処理中にエラーが発生しました: `{dl_error}`")
     except Exception as e:
@@ -189,6 +189,7 @@ async def process_media_link(message, url_type):
                 api_url = f"https://www.phixiv.net/api/info?id={artwork_id}"
                 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
                 
+                original_image_urls = []
                 async with aiohttp.ClientSession(headers=headers) as session:
                     try:
                         async with session.get(api_url, timeout=15) as resp:
@@ -218,22 +219,31 @@ async def process_media_link(message, url_type):
                                 await message.add_reaction(error_emoji)
                                 return
 
-                            # ★★★★★ ここからが修正箇所 ★★★★★
-                            # 複数ページ作品のURLをより堅牢に取得するための、シンプル化されたロジック
                             if 'urls' in artwork_data and isinstance(artwork_data['urls'], dict):
                                 page_count = artwork_data.get('page_count', 1)
                                 urls_dict = artwork_data['urls']
                                 original_url_template = urls_dict.get('original')
 
                                 if original_url_template:
-                                    # 複数ページで、かつ標準的な `_p0` 形式のURLの場合
                                     if page_count > 1 and '_p0' in original_url_template:
                                         for i in range(page_count):
-                                            image_urls.append(original_url_template.replace('_p0', f'_p{i}'))
-                                    # 単一ページ、または非標準的なURL形式の場合
+                                            original_image_urls.append(original_url_template.replace('_p0', f'_p{i}'))
                                     else:
-                                        # 少なくとも1枚目の画像は取得する
-                                        image_urls.append(original_url_template)
+                                        original_image_urls.append(original_url_template)
+                            
+                            # ★★★★★ ここからが修正箇所 ★★★★★
+                            # phixiv.net APIから取得したURLをpixiv.ohayua.cyouドメインに書き換える
+                            if original_image_urls:
+                                print(f"Successfully fetched {len(original_image_urls)} URLs from phixiv API for ID {artwork_id}.")
+                                for url in original_image_urls:
+                                    if 'i.pximg.net' in url:
+                                        # 'i.pximg.net' を 'pixiv.ohayua.cyou' に置き換える
+                                        proxied_url = url.replace('i.pximg.net', 'pixiv.ohayua.cyou')
+                                        image_urls.append(proxied_url)
+                                    else:
+                                        # 予期しないURL形式の場合は、そのまま追加
+                                        image_urls.append(url)
+                                print(f"Rewrote URLs to use pixiv.ohayua.cyou proxy.")
                             # ★★★★★ ここまでが修正箇所 ★★★★★
 
                     except asyncio.TimeoutError:
@@ -251,6 +261,7 @@ async def process_media_link(message, url_type):
         if image_urls:
             await download_and_send_images(message.author, image_urls, message.channel, message.author)
         elif url_type == 'pixiv':
+            # このメッセージは、API呼び出しは成功したがURLが見つからなかった場合に表示される
             await message.channel.send("APIから画像URLを取得できませんでした。作品が存在しないか、非公開の可能性があります。", reference=message)
             await message.add_reaction(error_emoji)
 
