@@ -54,7 +54,7 @@ GACHA_TRIGGER = "<:img:1332781427498029106>"
 GACHA_STAR_1 = ("<:JYUNYA:921397676166234162>", "<:maiahi:855369574819168266>", "<:emoji_33:901741259260039239>")
 GACHA_STAR_2 = ("<:beerjunya:859283357841489950>",)
 GACHA_STAR_3 = ("<:rainbowjunya2:930782219490983937>",)
-GACHA_ITEMS = [GACHA_STAR_1, GACHA_STAR_2, GACHA_STAR_3, STICKER]
+GACHA_ITEMS =
 GACHA_WEIGHTS_NORMAL = [78.5, 18.5, 2.3, 0.7]
 GACHA_WEIGHTS_GUARANTEED = [0, 18.5 + 78.5, 2.3, 0.7]
 
@@ -84,9 +84,9 @@ async def download_and_send_images(destination, image_urls, fallback_channel, me
     if not image_urls:
         return
 
-    files_to_send = []
+    files_to_send =
     try:
-        # Pixivからの画像取得にはRefererが必要な場合があるためヘッダーに含める
+        # Pixivからの画像取得にはRefererが必要なためヘッダーに含める
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
             'Referer': 'https://www.pixiv.net/'
@@ -101,7 +101,7 @@ async def download_and_send_images(destination, image_urls, fallback_channel, me
                             if len(image_data) > MAX_FILE_SIZE:
                                 await fallback_channel.send(f"画像 {i+1} はサイズが大きすぎるため、送信できません。({len(image_data) / 1024 / 1024:.2f}MB)")
                                 continue
-                            filename = os.path.basename(img_url.split('?')[0])
+                            filename = os.path.basename(img_url.split('?'))
                             files_to_send.append(discord.File(io.BytesIO(image_data), filename=filename))
                         else:
                             await fallback_channel.send(f"画像 {i+1} のダウンロードに失敗しました。 (Status: {img_resp.status})")
@@ -148,7 +148,7 @@ async def process_media_link(message, url_type):
         # リアクションが付けられなくても処理は続行
         pass
 
-    image_urls = []
+    image_urls =
     
     try:
         async with message.channel.typing():
@@ -165,7 +165,7 @@ async def process_media_link(message, url_type):
                     async with session.get(api_url) as resp:
                         if resp.status == 200:
                             data = await resp.json()
-                            media_list = data.get('tweet', {}).get('media', {}).get('all', [])
+                            media_list = data.get('tweet', {}).get('media', {}).get('all',)
                             for media in media_list:
                                 image_urls.append(media['url'])
             
@@ -183,7 +183,7 @@ async def process_media_link(message, url_type):
                 async with aiohttp.ClientSession(headers=headers) as session:
                     try:
                         async with session.get(api_url, timeout=15) as resp:
-                            if resp.status != 200:
+                            if resp.status!= 200:
                                 print(f"phixiv API returned status {resp.status} for ID {artwork_id}")
                                 await message.channel.send(f"APIエラーが発生しました (Status: {resp.status})。サービスがダウンしている可能性があります。", reference=message)
                                 await message.add_reaction(error_emoji)
@@ -192,8 +192,9 @@ async def process_media_link(message, url_type):
                             # ★★★★★ ここからが修正箇所 ★★★★★
                             json_response = await resp.json()
                             artwork_data = None
+                            # APIの応答がリスト形式か辞書形式か判定して適切に処理
                             if isinstance(json_response, list) and json_response:
-                                artwork_data = json_response[0]
+                                artwork_data = json_response
                             elif isinstance(json_response, dict):
                                 artwork_data = json_response
 
@@ -203,14 +204,15 @@ async def process_media_link(message, url_type):
                                 await message.add_reaction(error_emoji)
                                 return
 
-                            is_r18 = any(tag.get('name') == 'R-18' for tag in artwork_data.get('tags', []) if isinstance(tag, dict))
+                            # R-18タグをチェックし、NSFWチャンネルでなければ処理を中断
+                            is_r18 = any(tag.get('name') == 'R-18' for tag in artwork_data.get('tags',) if isinstance(tag, dict))
                             if is_r18 and not message.channel.is_nsfw():
                                 print(f"Blocked R-18 content in SFW channel for ID {artwork_id}")
                                 await message.channel.send("この作品はR-18指定のため、NSFWチャンネル以外では画像を取得できません。", reference=message, delete_after=10)
                                 await message.add_reaction(error_emoji)
                                 return
 
-                            # 新しい堅牢なURL解析ロジック
+                            # 複数ページに対応した、より堅牢なURL解析ロジック
                             if 'urls' in artwork_data and isinstance(artwork_data['urls'], dict):
                                 page_count = artwork_data.get('page_count', 1)
                                 urls_dict = artwork_data['urls']
@@ -227,7 +229,7 @@ async def process_media_link(message, url_type):
                                     if page_count > 1:
                                         print(f"Warning: Found single URL for a multi-page work (ID: {artwork_id}). Only sending first page.")
 
-                                # Priority 3: 'original'キーがない場合のフォールバック (p0, p1, ...形式)
+                                # Priority 3: 'original'キーがない場合のフォールバック (p0, p1,...形式)
                                 else:
                                     for i in range(page_count):
                                         page_key = f"p{i}"
@@ -272,7 +274,7 @@ async def process_media_link(message, url_type):
 
 
 async def process_embed_images(message, embeds):
-    image_urls = []
+    image_urls =
     for embed in embeds:
         if embed.image and embed.image.url:
             image_urls.append(embed.image.url)
@@ -286,7 +288,7 @@ async def process_embed_images(message, embeds):
 
 def perform_gacha_draw(guaranteed=False):
     weights = GACHA_WEIGHTS_GUARANTEED if guaranteed else GACHA_WEIGHTS_NORMAL
-    chosen_category = random.choices(GACHA_ITEMS, weights=weights, k=1)[0]
+    chosen_category = random.choices(GACHA_ITEMS, weights=weights, k=1)
     return random.choice(chosen_category)
 
 async def send_gacha_results(message):
@@ -379,7 +381,7 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     if not message.embeds:
         return
 
-    image_urls = []
+    image_urls =
     for embed in message.embeds:
         if embed.image and embed.image.url:
             image_urls.append(embed.image.url)
