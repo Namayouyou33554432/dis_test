@@ -81,8 +81,8 @@ class DeleteButtonView(discord.ui.View):
 # -----------------------------------------------------------------------------
 # ヘルパー関数
 # -----------------------------------------------------------------------------
-async def download_and_send_images(destination, image_urls, fallback_channel, mention_user):
-    if not image_urls:
+async def download_and_send_images(destination, image_url_groups, fallback_channel, mention_user):
+    if not image_url_groups:
         return False
 
     files_to_send = []
@@ -93,20 +93,30 @@ async def download_and_send_images(destination, image_urls, fallback_channel, me
         }
         async with aiohttp.ClientSession(headers=headers) as session:
             MAX_FILE_SIZE = 24 * 1024 * 1024
-            for i, img_url in enumerate(image_urls):
-                try:
-                    async with session.get(img_url) as img_resp:
-                        if img_resp.status == 200:
-                            image_data = await img_resp.read()
-                            if len(image_data) > MAX_FILE_SIZE:
-                                await fallback_channel.send(f"画像 {i+1} はサイズが大きすぎるため、送信できません。({len(image_data) / 1024 / 1024:.2f}MB)")
-                                continue
-                            filename = os.path.basename(img_url.split('?')[0])
-                            files_to_send.append(discord.File(io.BytesIO(image_data), filename=filename))
-                        else:
-                            await fallback_channel.send(f"画像 {i+1} のダウンロードに失敗しました。 (Status: {img_resp.status})\nURL: {img_url}")
-                except Exception as dl_error:
-                    await fallback_channel.send(f"画像 {i+1} の処理中にエラーが発生しました: `{dl_error}`\nURL: {img_url}")
+            # ★★★★★ ここからが拡張子ローリングの修正箇所 ★★★★★
+            for i, url_group in enumerate(image_url_groups):
+                download_success = False
+                for img_url in url_group: # [.png, .jpg, .gif] の順で試行
+                    try:
+                        async with session.get(img_url) as img_resp:
+                            if img_resp.status == 200:
+                                image_data = await img_resp.read()
+                                if len(image_data) > MAX_FILE_SIZE:
+                                    await fallback_channel.send(f"画像 {i+1} はサイズが大きすぎるため、送信できません。({len(image_data) / 1024 / 1024:.2f}MB)")
+                                    download_success = True # 送信はしないが、ダウンロード自体は成功とみなす
+                                    break
+                                
+                                filename = os.path.basename(img_url.split('?')[0])
+                                files_to_send.append(discord.File(io.BytesIO(image_data), filename=filename))
+                                download_success = True
+                                break # 成功したので次の画像の処理へ
+                    except Exception as dl_error:
+                        print(f"Attempt failed for {img_url}: {dl_error}")
+                        continue # 次の拡張子を試す
+                
+                if not download_success:
+                    await fallback_channel.send(f"画像 {i+1} のダウンロードに全ての拡張子で失敗しました。")
+            # ★★★★★ ここまでが修正箇所 ★★★★★
     except Exception as e:
         print(f"画像ダウンロード中に予期せぬエラーが発生しました: {e}")
         traceback.print_exc()
@@ -114,6 +124,9 @@ async def download_and_send_images(destination, image_urls, fallback_channel, me
         return False
 
     if not files_to_send:
+        # ダウンロードは成功したが、ファイルサイズ超過などで送信対象がなかった場合
+        if any(image_url_groups): # URLグループが空でなかったことを確認
+             return True # 処理としては成功
         return False
 
     is_dm_target = isinstance(destination, (discord.User, discord.Member))
@@ -145,7 +158,7 @@ async def download_and_send_images(destination, image_urls, fallback_channel, me
 # メインの処理関数
 # -----------------------------------------------------------------------------
 async def process_media_link(message, url_type):
-    image_urls = []
+    image_url_groups = [] # 拡張子の候補をグループ化するリストに変更
     
     try:
         async with message.channel.typing():
@@ -164,7 +177,8 @@ async def process_media_link(message, url_type):
                             data = await resp.json()
                             media_list = data.get('tweet', {}).get('media', {}).get('all', [])
                             for media in media_list:
-                                image_urls.append(media['url'])
+                                # Twitterの場合はURLが1つなので、そのままグループに追加
+                                image_url_groups.append([media['url']])
             
             elif url_type == 'pixiv':
                 match = re.search(r'https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/(\d+)', message.content)
@@ -187,9 +201,7 @@ async def process_media_link(message, url_type):
                                 await message.channel.send("APIから画像URLが見つかりませんでした。")
                                 return
                             
-                            # ★★★★★ ここからが拡張子問題を解決する修正箇所 ★★★★★
-                            # 正規表現でURLから必要な情報をすべて抽出
-                            pattern = re.compile(r'/img/(\d{4}/\d{2}/\d{2}/\d{2}/\d{2}/\d{2})/(\d+)_p(\d+)(?:_master\d+)?\.(jpg|png|gif)')
+                            pattern = re.compile(r'/img/(\d{4}/\d{2}/\d{2}/\d{2}/\d{2}/\d{2})/(\d+)_p(\d+)')
 
                             for proxy_url in proxy_urls:
                                 url_match = pattern.search(proxy_url)
@@ -197,17 +209,18 @@ async def process_media_link(message, url_type):
                                     date_path = url_match.group(1)
                                     illust_id = url_match.group(2)
                                     page_num = url_match.group(3)
-                                    # 正しい拡張子を抽出
-                                    extension = url_match.group(4)
                                     
-                                    # 正しい拡張子を使ってpixiv.reのURLを構築
-                                    original_url = f"https://i.pixiv.re/img-original/img/{date_path}/{illust_id}_p{page_num}.{extension}"
-                                    image_urls.append(original_url)
+                                    # ★★★★★ ここからが拡張子ローリングの修正箇所 ★★★★★
+                                    # 拡張子を除いたベースURLを作成
+                                    base_url = f"https://i.pixiv.re/img-original/img/{date_path}/{illust_id}_p{page_num}"
+                                    # 試行する拡張子のリストを作成
+                                    potential_urls = [f"{base_url}.png", f"{base_url}.jpg", f"{base_url}.gif"]
+                                    image_url_groups.append(potential_urls)
+                                    # ★★★★★ ここまでが修正箇所 ★★★★★
                                 else:
                                     print(f"Could not parse proxy URL: {proxy_url}")
-                            # ★★★★★ ここまでが修正箇所 ★★★★★
                             
-                            if not image_urls:
+                            if not image_url_groups:
                                 await message.channel.send("高画質画像URLの解析に失敗しました。")
 
                         else:
@@ -215,13 +228,13 @@ async def process_media_link(message, url_type):
                             await message.channel.send(f"APIエラーが発生しました (Status: {resp.status})。サービスがダウンしている可能性があります。", reference=message)
                             return
 
-            if image_urls:
+            if image_url_groups:
                 user_id = message.author.id
                 send_preference = user_settings.get(user_id, 'dm')
                 destination = message.author if send_preference == 'dm' else message.channel
-                await download_and_send_images(destination, image_urls, message.channel, message.author)
+                await download_and_send_images(destination, image_url_groups, message.channel, message.author)
             else:
-                if url_type == 'pixiv' and not image_urls:
+                if url_type == 'pixiv' and not image_url_groups:
                     pass
                 else:
                     await message.channel.send("このリンクからは画像を見つけられませんでした。")
@@ -237,19 +250,20 @@ async def process_media_link(message, url_type):
         await message.channel.send(f"予期せぬエラーが発生しました: `{type(e).__name__}`")
 
 async def process_embed_images(message, embeds):
-    image_urls = []
+    image_url_groups = []
     for embed in embeds:
         if embed.image and embed.image.url:
-            image_urls.append(embed.image.url)
+            # 埋め込み画像はURLが確定しているので、単一のリストとして追加
+            image_url_groups.append([embed.image.url])
 
-    if not image_urls:
+    if not image_url_groups:
         await message.channel.send("この埋め込みには保存できる画像が見つかりませんでした。", reference=message)
         return
     
     user_id = message.author.id
     send_preference = user_settings.get(user_id, 'dm')
     destination = message.author if send_preference == 'dm' else message.channel
-    await download_and_send_images(destination, image_urls, message.channel, message.author)
+    await download_and_send_images(destination, image_url_groups, message.channel, message.author)
 
 
 def perform_gacha_draw(guaranteed=False):
@@ -359,12 +373,12 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     if not message.embeds:
         return
 
-    image_urls = []
+    image_url_groups = []
     for embed in message.embeds:
         if embed.image and embed.image.url:
-            image_urls.append(embed.image.url)
+            image_url_groups.append([embed.image.url])
 
-    if not image_urls:
+    if not image_url_groups:
         return
 
     try:
@@ -377,7 +391,7 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
 
     success = await download_and_send_images(
         destination=destination,
-        image_urls=image_urls,
+        image_urls=image_url_groups,
         fallback_channel=channel,
         mention_user=user
     )
