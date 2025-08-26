@@ -54,7 +54,7 @@ GACHA_TRIGGER = "<:img:1332781427498029106>"
 GACHA_STAR_1 = ("<:JYUNYA:921397676166234162>", "<:maiahi:855369574819168266>", "<:emoji_33:901741259260039239>")
 GACHA_STAR_2 = ("<:beerjunya:859283357841489950>",)
 GACHA_STAR_3 = ("<:rainbowjunya2:930782219490983937>",)
-GACHA_ITEMS =
+GACHA_ITEMS = [GACHA_STAR_1, GACHA_STAR_2, GACHA_STAR_3, STICKER]
 GACHA_WEIGHTS_NORMAL = [78.5, 18.5, 2.3, 0.7]
 GACHA_WEIGHTS_GUARANTEED = [0, 18.5 + 78.5, 2.3, 0.7]
 
@@ -84,7 +84,7 @@ async def download_and_send_images(destination, image_urls, fallback_channel, me
     if not image_urls:
         return
 
-    files_to_send =
+    files_to_send = []
     try:
         # Pixivからの画像取得にはRefererが必要なためヘッダーに含める
         headers = {
@@ -101,7 +101,8 @@ async def download_and_send_images(destination, image_urls, fallback_channel, me
                             if len(image_data) > MAX_FILE_SIZE:
                                 await fallback_channel.send(f"画像 {i+1} はサイズが大きすぎるため、送信できません。({len(image_data) / 1024 / 1024:.2f}MB)")
                                 continue
-                            filename = os.path.basename(img_url.split('?'))
+                            # URLからクエリパラメータを除去してファイル名を取得
+                            filename = os.path.basename(img_url.split('?')[0])
                             files_to_send.append(discord.File(io.BytesIO(image_data), filename=filename))
                         else:
                             await fallback_channel.send(f"画像 {i+1} のダウンロードに失敗しました。 (Status: {img_resp.status})")
@@ -148,7 +149,7 @@ async def process_media_link(message, url_type):
         # リアクションが付けられなくても処理は続行
         pass
 
-    image_urls =
+    image_urls = []
     
     try:
         async with message.channel.typing():
@@ -156,18 +157,26 @@ async def process_media_link(message, url_type):
                 match = re.search(r'https?://(?:www\.)?(?:x|twitter)\.com/(\w+/status/\d+)', message.content)
                 if not match: return
                 status_part = match.group(1)
+
                 mirror_url = f"https://vxtwitter.com/{status_part}"
-                api_url = f"https://api.fxtwitter.com/{status_part}"
+                api_url = f"https://api.vxtwitter.com/{status_part}" 
+
                 await message.channel.send(mirror_url)
                 
                 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
                 async with aiohttp.ClientSession(headers=headers) as session:
                     async with session.get(api_url) as resp:
                         if resp.status == 200:
-                            data = await resp.json()
-                            media_list = data.get('tweet', {}).get('media', {}).get('all',)
-                            for media in media_list:
-                                image_urls.append(media['url'])
+                            try:
+                                data = await resp.json()
+                                media_list = data.get('media_extended', [])
+                                for media in media_list:
+                                    if media.get('type') == 'image':
+                                        image_urls.append(media['url'])
+                            except Exception as e:
+                                print(f"Failed to parse vxtwitter API response: {e}")
+                        else:
+                            print(f"vxtwitter API returned status {resp.status}")
             
             elif url_type == 'pixiv':
                 match = re.search(r'https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/(\d+)', message.content)
@@ -183,18 +192,16 @@ async def process_media_link(message, url_type):
                 async with aiohttp.ClientSession(headers=headers) as session:
                     try:
                         async with session.get(api_url, timeout=15) as resp:
-                            if resp.status!= 200:
+                            if resp.status != 200:
                                 print(f"phixiv API returned status {resp.status} for ID {artwork_id}")
                                 await message.channel.send(f"APIエラーが発生しました (Status: {resp.status})。サービスがダウンしている可能性があります。", reference=message)
                                 await message.add_reaction(error_emoji)
                                 return
 
-                            # ★★★★★ ここからが修正箇所 ★★★★★
                             json_response = await resp.json()
                             artwork_data = None
-                            # APIの応答がリスト形式か辞書形式か判定して適切に処理
                             if isinstance(json_response, list) and json_response:
-                                artwork_data = json_response
+                                artwork_data = json_response[0]
                             elif isinstance(json_response, dict):
                                 artwork_data = json_response
 
@@ -204,38 +211,47 @@ async def process_media_link(message, url_type):
                                 await message.add_reaction(error_emoji)
                                 return
 
-                            # R-18タグをチェックし、NSFWチャンネルでなければ処理を中断
-                            is_r18 = any(tag.get('name') == 'R-18' for tag in artwork_data.get('tags',) if isinstance(tag, dict))
+                            is_r18 = any(tag.get('name') == 'R-18' for tag in artwork_data.get('tags', []) if isinstance(tag, dict))
                             if is_r18 and not message.channel.is_nsfw():
                                 print(f"Blocked R-18 content in SFW channel for ID {artwork_id}")
                                 await message.channel.send("この作品はR-18指定のため、NSFWチャンネル以外では画像を取得できません。", reference=message, delete_after=10)
                                 await message.add_reaction(error_emoji)
                                 return
 
-                            # 複数ページに対応した、より堅牢なURL解析ロジック
+                            # ★★★★★ ここからが修正箇所 ★★★★★
+                            # 複数ページ作品のURLをより堅牢に取得するためのロジック改善
                             if 'urls' in artwork_data and isinstance(artwork_data['urls'], dict):
                                 page_count = artwork_data.get('page_count', 1)
                                 urls_dict = artwork_data['urls']
-                                original_url_template = urls_dict.get('original')
-
-                                # Priority 1: 標準的な複数ページ形式 (_p0)
-                                if page_count > 1 and original_url_template and '_p0' in original_url_template:
-                                    for i in range(page_count):
-                                        image_urls.append(original_url_template.replace('_p0', f'_p{i}'))
                                 
-                                # Priority 2: 'original'キーを持つ単一ページまたは不明な複数ページ形式
-                                elif original_url_template:
-                                    image_urls.append(original_url_template)
-                                    if page_count > 1:
-                                        print(f"Warning: Found single URL for a multi-page work (ID: {artwork_id}). Only sending first page.")
-
-                                # Priority 3: 'original'キーがない場合のフォールバック (p0, p1,...形式)
-                                else:
+                                # 複数ページの作品を優先的に処理
+                                if page_count > 1:
+                                    # 方法1: p0, p1, ... のキーから直接URLを取得 (より信頼性が高い可能性がある)
+                                    temp_urls = []
                                     for i in range(page_count):
                                         page_key = f"p{i}"
                                         page_data = urls_dict.get(page_key)
                                         if isinstance(page_data, dict) and 'original' in page_data:
-                                            image_urls.append(page_data['original'])
+                                            temp_urls.append(page_data['original'])
+                                    
+                                    # すべてのページのURLが取得できた場合のみ採用
+                                    if len(temp_urls) == page_count:
+                                        image_urls.extend(temp_urls)
+                                    else:
+                                        # 方法2: 方法1が失敗した場合、_p0テンプレートの置換を試みる
+                                        original_url_template = urls_dict.get('original')
+                                        if original_url_template and '_p0' in original_url_template:
+                                            for i in range(page_count):
+                                                image_urls.append(original_url_template.replace('_p0', f'_p{i}'))
+                                        # どちらの方法でも全ページ取得できなかった場合の警告
+                                        elif image_urls: # 一部だけでも取得できていれば警告
+                                            print(f"Warning: Could not fetch all pages for multi-page work (ID: {artwork_id}). API response might be incomplete.")
+                                
+                                # 単一ページの作品、または複数ページ処理が失敗した場合のフォールバック
+                                if not image_urls:
+                                    original_url = urls_dict.get('original')
+                                    if original_url:
+                                        image_urls.append(original_url)
                             # ★★★★★ ここまでが修正箇所 ★★★★★
 
                     except asyncio.TimeoutError:
@@ -252,8 +268,7 @@ async def process_media_link(message, url_type):
 
         if image_urls:
             await download_and_send_images(message.author, image_urls, message.channel, message.author)
-        else:
-            # 処理したが画像が見つからなかった場合
+        elif url_type == 'pixiv':
             await message.channel.send("APIから画像URLを取得できませんでした。作品が存在しないか、非公開の可能性があります。", reference=message)
             await message.add_reaction(error_emoji)
 
@@ -266,7 +281,6 @@ async def process_media_link(message, url_type):
         except (discord.Forbidden, discord.HTTPException):
             pass
     finally:
-        # 処理完了後、リアクションを削除
         try:
             await message.remove_reaction(processing_emoji, client.user)
         except (discord.Forbidden, discord.HTTPException):
@@ -274,7 +288,7 @@ async def process_media_link(message, url_type):
 
 
 async def process_embed_images(message, embeds):
-    image_urls =
+    image_urls = []
     for embed in embeds:
         if embed.image and embed.image.url:
             image_urls.append(embed.image.url)
@@ -288,7 +302,7 @@ async def process_embed_images(message, embeds):
 
 def perform_gacha_draw(guaranteed=False):
     weights = GACHA_WEIGHTS_GUARANTEED if guaranteed else GACHA_WEIGHTS_NORMAL
-    chosen_category = random.choices(GACHA_ITEMS, weights=weights, k=1)
+    chosen_category = random.choices(GACHA_ITEMS, weights=weights, k=1)[0]
     return random.choice(chosen_category)
 
 async def send_gacha_results(message):
@@ -381,7 +395,7 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     if not message.embeds:
         return
 
-    image_urls =
+    image_urls = []
     for embed in message.embeds:
         if embed.image and embed.image.url:
             image_urls.append(embed.image.url)
