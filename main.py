@@ -28,6 +28,7 @@ intents.message_content = True
 intents.reactions = True
 client = discord.Client(intents=intents)
 
+# (SHOT_TYPE, STICKER, GACHA_* 定数は変更ないため省略)
 SHOT_TYPE = (
     (4, "紅霊夢A", "紅霊夢B", "紅魔理沙A", "紅魔理沙B"),
     (6, "妖霊夢A", "妖霊夢B", "妖魔理沙A", "妖魔理沙B", "妖咲夜A", "妖咲夜B"),
@@ -75,16 +76,17 @@ class DeleteButtonView(discord.ui.View):
 # -----------------------------------------------------------------------------
 # ヘルパー関数
 # -----------------------------------------------------------------------------
-async def download_and_send_images(destination, image_urls, fallback_channel, mention_user, referer=None):
+async def download_and_send_images(destination, image_urls, fallback_channel, mention_user):
+    """
+    URLリストから画像をダウンロードし、指定された宛先（DM）に送信を試みる。
+    失敗した場合はフォールバック用のチャンネルに送信する。
+    """
     if not image_urls:
         return
 
     files_to_send = []
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
-        if referer:
-            headers['Referer'] = referer
-            
         async with aiohttp.ClientSession(headers=headers) as session:
             MAX_FILE_SIZE = 24 * 1024 * 1024
             for i, img_url in enumerate(image_urls):
@@ -128,7 +130,7 @@ async def download_and_send_images(destination, image_urls, fallback_channel, me
         await fallback_channel.send(f"画像の送信中に予期せぬエラーが発生しました: `{type(e).__name__}`")
 
 # -----------------------------------------------------------------------------
-# メインの処理関数 (★★★★★ 最新版に修正済み ★★★★★)
+# メインの処理関数
 # -----------------------------------------------------------------------------
 async def process_media_link(message, url_type):
     image_urls = []
@@ -156,55 +158,31 @@ async def process_media_link(message, url_type):
                 match = re.search(r'https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/(\d+)', message.content)
                 if not match: return
                 artwork_id = match.group(1)
-                
-                page_url = f"https://www.phixiv.net/artworks/{artwork_id}"
-                await message.channel.send(page_url)
+                mirror_url = f"https://www.phixiv.net/artworks/{artwork_id}"
+                await message.channel.send(mirror_url)
 
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(page_url) as resp:
-                            if resp.status != 200:
-                                await message.channel.send(f"ページの取得に失敗しました。(Status: {resp.status})")
-                                return
-                            
-                            html_content = await resp.text()
-
-                            # ページのデータが埋め込まれたJSON部分を正規表現で抽出
-                            json_match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html_content)
-                            
-                            if json_match:
-                                json_data = json.loads(json_match.group(1))
-                                illust_data = json_data.get('props', {}).get('pageProps', {}).get('illust', {})
-
-                                if not illust_data:
-                                    pass
-                                elif illust_data.get('metaPages') and len(illust_data['metaPages']) > 0:
-                                    for page in illust_data['metaPages']:
-                                        urls = page.get('imageUrls', {})
-                                        image_urls.append(urls.get('original', urls.get('regular')))
-                                elif illust_data.get('urls'):
-                                    urls = illust_data.get('urls', {})
-                                    image_urls.append(urls.get('original', urls.get('regular')))
-                                
-                                image_urls = [url for url in image_urls if url]
-
-                except Exception as e:
-                    print(f"スクレイピング中にエラーが発生しました: {e}")
-                    traceback.print_exc()
-                    await message.channel.send(f"画像の抽出中にエラーが発生しました: `{type(e).__name__}`")
-                    return
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36', 'Referer': 'https://www.pixiv.net/'}
+                async with aiohttp.ClientSession(headers=headers) as session:
+                    for i in range(1, 21):
+                        found_image_for_this_page = False
+                        for ext in ['.jpg', '.png', '.gif']:
+                            img_url = f"https://pxiv.cat/{artwork_id}-{i}{ext}"
+                            try:
+                                async with session.head(img_url, timeout=7, allow_redirects=True) as img_resp:
+                                    if img_resp.status == 200:
+                                        final_url = str(img_resp.url)
+                                        image_urls.append(final_url)
+                                        found_image_for_this_page = True
+                                        break
+                            except Exception:
+                                pass
+                        if not found_image_for_this_page:
+                            break
 
             if image_urls:
-                referer = "https://www.pixiv.net/" if url_type == 'pixiv' else None
-                await download_and_send_images(
-                    destination=message.author, 
-                    image_urls=image_urls, 
-                    fallback_channel=message.channel, 
-                    mention_user=message.author,
-                    referer=referer
-                )
-            elif url_type == 'pixiv' or url_type == 'twitter':
-                 await message.channel.send("このリンクからは画像を見つけられませんでした。")
+                await download_and_send_images(message.author, image_urls, message.channel, message.author)
+            else:
+                await message.channel.send("このリンクからは画像を見つけられませんでした。")
 
     except Exception as e:
         print(f"予期せぬエラーが発生しました: {e}")
@@ -346,17 +324,15 @@ def run_bot():
         return
 
     try:
-        loop = asyncio.get_running_loop()
+        loop = asyncio.get_event_loop()
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
     
-    try:
-        loop.run_until_complete(client.start(bot_token))
-    except KeyboardInterrupt:
-        loop.run_until_complete(client.close())
-    finally:
-        loop.close()
+    loop.create_task(client.start(bot_token))
+    
+    if not loop.is_running():
+        loop.run_forever()
 
 
 bot_thread = threading.Thread(target=run_bot)
