@@ -25,6 +25,7 @@ def hello():
 # -----------------------------------------------------------------------------
 intents = discord.Intents.default()
 intents.message_content = True
+# ★★★★★ リアクションを検知するためにIntentsを追加 ★★★★★
 intents.reactions = True
 client = discord.Client(intents=intents)
 
@@ -59,7 +60,7 @@ GACHA_WEIGHTS_NORMAL = [78.5, 18.5, 2.3, 0.7]
 GACHA_WEIGHTS_GUARANTEED = [0, 18.5 + 78.5, 2.3, 0.7]
 
 # -----------------------------------------------------------------------------
-# UIコンポーネント (★★★★★ 削除ボタンの処理を修正 ★★★★★)
+# UIコンポーネント
 # -----------------------------------------------------------------------------
 class DeleteButtonView(discord.ui.View):
     def __init__(self, *, timeout=180):
@@ -67,17 +68,14 @@ class DeleteButtonView(discord.ui.View):
 
     @discord.ui.button(label="削除", style=discord.ButtonStyle.danger, emoji="🗑️")
     async def delete_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # ★★★★★ 先にインタラクションに応答して、エラーを防ぐ ★★★★★
-        await interaction.response.defer()
         try:
-            # その後でメッセージを削除
             await interaction.message.delete()
         except discord.HTTPException as e:
-            # エラーが発生した場合はログに出力するだけ
             print(f"Failed to delete message: {e}")
+            await interaction.response.defer()
 
 # -----------------------------------------------------------------------------
-# ヘルパー関数
+# ヘルパー関数 (★★★★★ より汎用的に修正 ★★★★★)
 # -----------------------------------------------------------------------------
 async def download_and_send_images(destination, image_urls, fallback_channel, mention_user):
     """
@@ -202,6 +200,7 @@ async def process_embed_images(message, embeds):
         await message.channel.send("この埋め込みには保存できる画像が見つかりませんでした。", reference=message)
         return
     
+    # 「再送信」と打ったユーザー (message.author) にDMを送る
     await download_and_send_images(message.author, image_urls, message.channel, message.author)
 
 
@@ -277,26 +276,32 @@ async def on_message(message):
         await message.channel.send(random.choice(STICKER))
         return
 
+# ★★★★★ リアクションを検知するイベントを追加 ★★★★★
 @client.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+    # ボット自身のリアクションは無視
     if payload.user_id == client.user.id:
         return
 
+    # 特定のリアクション絵文字かチェック
     target_emojis = ['<:sikei:1404428286112825404>', '❤️']
     if str(payload.emoji) not in target_emojis:
         return
 
     try:
         channel = client.get_channel(payload.channel_id)
+        # DM内でのリアクションなどは無視
         if not isinstance(channel, discord.TextChannel):
              return
         message = await channel.fetch_message(payload.message_id)
     except (discord.NotFound, discord.Forbidden):
         return
 
+    # メッセージに埋め込みがあるかチェック
     if not message.embeds:
         return
 
+    # 埋め込みから画像URLを抽出
     image_urls = []
     for embed in message.embeds:
         if embed.image and embed.image.url:
@@ -306,10 +311,12 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
         return
 
     try:
+        # リアクションしたユーザーを取得
         user = await client.fetch_user(payload.user_id)
     except discord.NotFound:
         return
 
+    # 画像をDMに送信するタスクを作成
     asyncio.create_task(download_and_send_images(
         destination=user,
         image_urls=image_urls,
