@@ -153,15 +153,25 @@ async def download_and_send_images(destination, image_url_groups, fallback_chann
 # メインの処理関数
 # -----------------------------------------------------------------------------
 async def process_media_link(message, url_type):
-    image_url_groups = []
-    
+    # ★★★★★ ここからがリアクション処理の修正箇所 ★★★★★
+    processing_emoji = "🤔"
+    success_emoji = '❤️'
+
     try:
+        # 処理開始時にリアクションを付ける
+        await message.add_reaction(processing_emoji)
+
+        image_url_groups = []
+        original_url = ""
+        
         async with message.channel.typing():
             if url_type == 'twitter':
-                match = re.search(r'https?://(?:www\.)?(?:x|twitter)\.com/(\w+/status/\d+)', message.content)
+                match = re.search(r'(https?://(?:www\.)?(?:x|twitter)\.com/\w+/status/\d+)', message.content)
                 if not match: return
+                original_url = match.group(1)
+                status_part = re.search(r'(\w+/status/\d+)', original_url).group(1)
                 
-                api_url = f"https://api.fxtwitter.com/{match.group(1)}"
+                api_url = f"https://api.fxtwitter.com/{status_part}"
                 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
                 async with aiohttp.ClientSession(headers=headers) as session:
                     async with session.get(api_url) as resp:
@@ -172,9 +182,10 @@ async def process_media_link(message, url_type):
                                 image_url_groups.append([media['url']])
             
             elif url_type == 'pixiv':
-                match = re.search(r'https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/(\d+)', message.content)
+                match = re.search(r'(https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/\d+)', message.content)
                 if not match: return
-                artwork_id = match.group(1)
+                original_url = match.group(1)
+                artwork_id = re.search(r'artworks/(\d+)', original_url).group(1)
 
                 api_url = f"https://www.phixiv.net/api/info?id={artwork_id}"
                 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
@@ -213,27 +224,38 @@ async def process_media_link(message, url_type):
                             return
 
             if image_url_groups:
-                # ★★★★★ ここからが送信先変更の修正箇所 ★★★★★
                 user_id = message.author.id
-                # デフォルトは'channel' (DMオフ)
-                send_preference = user_settings.get(user_id, 'channel') 
+                send_preference = user_settings.get(user_id, 'channel')
                 
-                destination = message.author if send_preference == 'dm' else message.channel
-                
-                await download_and_send_images(destination, image_url_groups, message.channel, message.author)
-                # ★★★★★ ここまでが修正箇所 ★★★★★
+                if send_preference == 'dm':
+                    destination = message.author
+                    if original_url:
+                        try:
+                            await destination.send(f"<{original_url}>")
+                        except discord.HTTPException as e:
+                            print(f"Could not send original URL to DM: {e}")
+                    await download_and_send_images(destination, image_url_groups, message.channel, message.author)
+                else:
+                    destination = message.channel
+                    await download_and_send_images(destination, image_url_groups, message.channel, message.author)
             else:
                 await message.channel.send("このリンクからは画像を見つけられませんでした。")
-
-        try:
-            await message.add_reaction('❤️')
-        except discord.HTTPException:
-            pass
 
     except Exception as e:
         print(f"予期せぬエラーが発生しました: {e}")
         traceback.print_exc()
         await message.channel.send(f"予期せぬエラーが発生しました: `{type(e).__name__}`")
+    finally:
+        # 処理が成功しても失敗しても、最後にリアクションを更新する
+        try:
+            await message.remove_reaction(processing_emoji, client.user)
+        except discord.HTTPException:
+            pass # リアクションが消されていてもエラーにしない
+        try:
+            await message.add_reaction(success_emoji)
+        except discord.HTTPException:
+            pass # メッセージが消されていてもエラーにしない
+    # ★★★★★ ここまでが修正箇所 ★★★★★
 
 async def process_embed_images(message, embeds):
     image_url_groups = []
@@ -246,7 +268,7 @@ async def process_embed_images(message, embeds):
         return
     
     user_id = message.author.id
-    send_preference = user_settings.get(user_id, 'channel') # デフォルトはチャンネル
+    send_preference = user_settings.get(user_id, 'channel')
     destination = message.author if send_preference == 'dm' else message.channel
     await download_and_send_images(destination, image_url_groups, message.channel, message.author)
 
@@ -271,7 +293,6 @@ def get_random_shot():
 @client.event
 async def on_ready():
     print(f'Bot準備完了～ Logged in as {client.user}')
-    # ★★★★★ Botのステータスメッセージを更新 ★★★★★
     game = discord.Game("!dmでDM送信ON/OFF")
     await client.change_presence(status=discord.Status.online, activity=game)
 
@@ -280,10 +301,9 @@ async def on_message(message):
     if message.author == client.user or message.author.bot:
         return
     
-    # ★★★★★ ここからが!dmコマンドの修正箇所 ★★★★★
     if message.content.lower() == '!dm':
         user_id = message.author.id
-        current_setting = user_settings.get(user_id, 'channel') # デフォルトは 'channel' (DMオフ)
+        current_setting = user_settings.get(user_id, 'channel')
 
         if current_setting == 'channel':
             user_settings[user_id] = 'dm'
@@ -292,7 +312,6 @@ async def on_message(message):
             user_settings[user_id] = 'channel'
             await message.channel.send(f"{message.author.mention} 画像のDM送信を **OFF** にしました。")
         return
-    # ★★★★★ ここまでが修正箇所 ★★★★★
 
     if message.content.lower() in ["再送信", "download"]:
         if message.reference and message.reference.message_id:
@@ -374,7 +393,7 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     except discord.NotFound:
         return
     
-    send_preference = user_settings.get(user.id, 'channel') # デフォルトはチャンネル
+    send_preference = user_settings.get(user.id, 'channel')
     destination = user if send_preference == 'dm' else channel
 
     success = await download_and_send_images(
