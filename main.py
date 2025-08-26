@@ -59,7 +59,7 @@ GACHA_WEIGHTS_NORMAL = [78.5, 18.5, 2.3, 0.7]
 GACHA_WEIGHTS_GUARANTEED = [0, 18.5 + 78.5, 2.3, 0.7]
 
 # -----------------------------------------------------------------------------
-# UIコンポーネント
+# UIコンポーネント (★★★★★ 削除ボタンの処理を修正 ★★★★★)
 # -----------------------------------------------------------------------------
 class DeleteButtonView(discord.ui.View):
     def __init__(self, *, timeout=180):
@@ -67,10 +67,13 @@ class DeleteButtonView(discord.ui.View):
 
     @discord.ui.button(label="削除", style=discord.ButtonStyle.danger, emoji="🗑️")
     async def delete_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # ★★★★★ 先にインタラクションに応答して、エラーを防ぐ ★★★★★
         await interaction.response.defer()
         try:
+            # その後でメッセージを削除
             await interaction.message.delete()
         except discord.HTTPException as e:
+            # エラーが発生した場合はログに出力するだけ
             print(f"Failed to delete message: {e}")
 
 # -----------------------------------------------------------------------------
@@ -86,11 +89,7 @@ async def download_and_send_images(destination, image_urls, fallback_channel, me
 
     files_to_send = []
     try:
-        # Pixivからの画像取得にはRefererが必要なためヘッダーに含める
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
-            'Referer': 'https://www.pixiv.net/'
-        }
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
         async with aiohttp.ClientSession(headers=headers) as session:
             MAX_FILE_SIZE = 24 * 1024 * 1024
             for i, img_url in enumerate(image_urls):
@@ -101,11 +100,10 @@ async def download_and_send_images(destination, image_urls, fallback_channel, me
                             if len(image_data) > MAX_FILE_SIZE:
                                 await fallback_channel.send(f"画像 {i+1} はサイズが大きすぎるため、送信できません。({len(image_data) / 1024 / 1024:.2f}MB)")
                                 continue
-                            # URLからクエリパラメータを除去してファイル名を取得
                             filename = os.path.basename(img_url.split('?')[0])
                             files_to_send.append(discord.File(io.BytesIO(image_data), filename=filename))
                         else:
-                            await fallback_channel.send(f"画像 {i+1} のダウンロードに失敗しました。 (Status: {img_resp.status}) URL: {img_url}")
+                            await fallback_channel.send(f"画像 {i+1} のダウンロードに失敗しました。 (Status: {img_resp.status})")
                 except Exception as dl_error:
                     await fallback_channel.send(f"画像 {i+1} の処理中にエラーが発生しました: `{dl_error}`")
     except Exception as e:
@@ -119,19 +117,16 @@ async def download_and_send_images(destination, image_urls, fallback_channel, me
 
     try:
         view = DeleteButtonView()
-        # 10ファイルごとにメッセージを分割して送信
-        for i in range(0, len(files_to_send), 10):
-            chunk = files_to_send[i:i+10]
-            await destination.send(files=chunk, view=view)
+        for file in files_to_send:
+            await destination.send(file=file, view=view)
         print(f"Sent {len(files_to_send)} images to {destination}.")
     except discord.Forbidden:
         print(f"Failed to send DM to {destination}. Sending to channel instead.")
         await fallback_channel.send(
             f"{mention_user.mention} DMに画像を送信できませんでした。プライバシー設定を確認してください。\n代わりにこのチャンネルに画像を投稿します。"
         )
-        for i in range(0, len(files_to_send), 10):
-            chunk = files_to_send[i:i+10]
-            await fallback_channel.send(files=chunk)
+        for file in files_to_send:
+            await fallback_channel.send(file=file)
     except Exception as e:
         print(f"An error occurred while sending files: {e}")
         traceback.print_exc()
@@ -141,14 +136,6 @@ async def download_and_send_images(destination, image_urls, fallback_channel, me
 # メインの処理関数
 # -----------------------------------------------------------------------------
 async def process_media_link(message, url_type):
-    processing_emoji = "🤔"
-    error_emoji = "⚠️"
-    try:
-        await message.add_reaction(processing_emoji)
-    except (discord.Forbidden, discord.HTTPException):
-        # リアクションが付けられなくても処理は続行
-        pass
-
     image_urls = []
     
     try:
@@ -157,128 +144,53 @@ async def process_media_link(message, url_type):
                 match = re.search(r'https?://(?:www\.)?(?:x|twitter)\.com/(\w+/status/\d+)', message.content)
                 if not match: return
                 status_part = match.group(1)
-
                 mirror_url = f"https://vxtwitter.com/{status_part}"
-                api_url = f"https://api.vxtwitter.com/{status_part}" 
-
+                api_url = f"https://api.fxtwitter.com/{status_part}"
                 await message.channel.send(mirror_url)
                 
                 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
                 async with aiohttp.ClientSession(headers=headers) as session:
                     async with session.get(api_url) as resp:
                         if resp.status == 200:
-                            try:
-                                data = await resp.json()
-                                media_list = data.get('media_extended', [])
-                                for media in media_list:
-                                    if media.get('type') == 'image':
-                                        image_urls.append(media['url'])
-                            except Exception as e:
-                                print(f"Failed to parse vxtwitter API response: {e}")
-                        else:
-                            print(f"vxtwitter API returned status {resp.status}")
+                            data = await resp.json()
+                            media_list = data.get('tweet', {}).get('media', {}).get('all', [])
+                            for media in media_list:
+                                image_urls.append(media['url'])
             
             elif url_type == 'pixiv':
                 match = re.search(r'https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/(\d+)', message.content)
                 if not match: return
                 artwork_id = match.group(1)
-                
                 mirror_url = f"https://www.phixiv.net/artworks/{artwork_id}"
                 await message.channel.send(mirror_url)
 
-                api_url = f"https://www.phixiv.net/api/info?id={artwork_id}"
-                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
-                
-                original_image_urls = []
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36', 'Referer': 'https://www.pixiv.net/'}
                 async with aiohttp.ClientSession(headers=headers) as session:
-                    try:
-                        async with session.get(api_url, timeout=15) as resp:
-                            if resp.status != 200:
-                                print(f"phixiv API returned status {resp.status} for ID {artwork_id}")
-                                await message.channel.send(f"APIエラーが発生しました (Status: {resp.status})。サービスがダウンしている可能性があります。", reference=message)
-                                await message.add_reaction(error_emoji)
-                                return
+                    for i in range(1, 21):
+                        found_image_for_this_page = False
+                        for ext in ['.jpg', '.png', '.gif']:
+                            img_url = f"https://pxiv.cat/{artwork_id}-{i}{ext}"
+                            try:
+                                async with session.head(img_url, timeout=7, allow_redirects=True) as img_resp:
+                                    if img_resp.status == 200:
+                                        final_url = str(img_resp.url)
+                                        image_urls.append(final_url)
+                                        found_image_for_this_page = True
+                                        break
+                            except Exception:
+                                pass
+                        if not found_image_for_this_page:
+                            break
 
-                            json_response = await resp.json()
-                            artwork_data = None
-                            if isinstance(json_response, list) and json_response:
-                                artwork_data = json_response[0]
-                            elif isinstance(json_response, dict):
-                                artwork_data = json_response
-
-                            if not artwork_data or not isinstance(artwork_data, dict):
-                                print(f"Invalid or empty API response for ID {artwork_id}: {json_response}")
-                                await message.channel.send("APIから有効な作品データを取得できませんでした。", reference=message)
-                                await message.add_reaction(error_emoji)
-                                return
-
-                            is_r18 = any(tag.get('name') == 'R-18' for tag in artwork_data.get('tags', []) if isinstance(tag, dict))
-                            if is_r18 and not message.channel.is_nsfw():
-                                print(f"Blocked R-18 content in SFW channel for ID {artwork_id}")
-                                await message.channel.send("この作品はR-18指定のため、NSFWチャンネル以外では画像を取得できません。", reference=message, delete_after=10)
-                                await message.add_reaction(error_emoji)
-                                return
-
-                            if 'urls' in artwork_data and isinstance(artwork_data['urls'], dict):
-                                page_count = artwork_data.get('page_count', 1)
-                                urls_dict = artwork_data['urls']
-                                original_url_template = urls_dict.get('original')
-
-                                if original_url_template:
-                                    if page_count > 1 and '_p0' in original_url_template:
-                                        for i in range(page_count):
-                                            original_image_urls.append(original_url_template.replace('_p0', f'_p{i}'))
-                                    else:
-                                        original_image_urls.append(original_url_template)
-                            
-                            # ★★★★★ ここからが修正箇所 ★★★★★
-                            # phixiv.net APIから取得したURLをpixiv.ohayua.cyouドメインに書き換える
-                            if original_image_urls:
-                                print(f"Successfully fetched {len(original_image_urls)} URLs from phixiv API for ID {artwork_id}.")
-                                for url in original_image_urls:
-                                    if 'i.pximg.net' in url:
-                                        # 'i.pximg.net' を 'pixiv.ohayua.cyou' に置き換える
-                                        proxied_url = url.replace('i.pximg.net', 'pixiv.ohayua.cyou')
-                                        image_urls.append(proxied_url)
-                                    else:
-                                        # 予期しないURL形式の場合は、そのまま追加
-                                        image_urls.append(url)
-                                print(f"Rewrote URLs to use pixiv.ohayua.cyou proxy.")
-                            # ★★★★★ ここまでが修正箇所 ★★★★★
-
-                    except asyncio.TimeoutError:
-                        print(f"Timeout fetching from phixiv API for ID {artwork_id}")
-                        await message.channel.send("APIへの接続がタイムアウトしました。サービスが混み合っている可能性があります。", reference=message)
-                        await message.add_reaction(error_emoji)
-                        return
-                    except Exception as e:
-                        print(f"Error fetching from phixiv API for ID {artwork_id}: {e}")
-                        traceback.print_exc()
-                        await message.channel.send(f"APIからのデータ取得中にエラーが発生しました: `{type(e).__name__}`", reference=message)
-                        await message.add_reaction(error_emoji)
-                        return
-
-        if image_urls:
-            await download_and_send_images(message.author, image_urls, message.channel, message.author)
-        elif url_type == 'pixiv':
-            # このメッセージは、API呼び出しは成功したがURLが見つからなかった場合に表示される
-            await message.channel.send("APIから画像URLを取得できませんでした。作品が存在しないか、非公開の可能性があります。", reference=message)
-            await message.add_reaction(error_emoji)
+            if image_urls:
+                await download_and_send_images(message.author, image_urls, message.channel, message.author)
+            else:
+                await message.channel.send("このリンクからは画像を見つけられませんでした。")
 
     except Exception as e:
         print(f"予期せぬエラーが発生しました: {e}")
         traceback.print_exc()
         await message.channel.send(f"予期せぬエラーが発生しました: `{type(e).__name__}`")
-        try:
-            await message.add_reaction(error_emoji)
-        except (discord.Forbidden, discord.HTTPException):
-            pass
-    finally:
-        try:
-            await message.remove_reaction(processing_emoji, client.user)
-        except (discord.Forbidden, discord.HTTPException):
-            pass
-
 
 async def process_embed_images(message, embeds):
     image_urls = []
@@ -321,9 +233,6 @@ async def on_message(message):
     if message.author == client.user or message.author.bot:
         return
     
-    if re.search(r'<\s*https?://[^>]+>', message.content):
-        return
-
     if message.content.lower() in ["再送信", "download"]:
         if message.reference and message.reference.message_id:
             try:
