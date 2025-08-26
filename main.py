@@ -68,14 +68,10 @@ GACHA_WEIGHTS_GUARANTEED = [0, 18.5 + 78.5, 2.3, 0.7]
 # UIコンポーネント
 # -----------------------------------------------------------------------------
 class DeleteButtonView(discord.ui.View):
-    # ★★★★★ ここからが修正箇所 ★★★★★
-    # timeout=None でボタンを無期限化
     def __init__(self):
         super().__init__(timeout=None)
 
-    # custom_id を設定してボタンを永続化
     @discord.ui.button(label="削除", style=discord.ButtonStyle.danger, emoji="🗑️", custom_id="persistent_delete_button")
-    # ★★★★★ ここまでが修正箇所 ★★★★★
     async def delete_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         try:
@@ -157,6 +153,52 @@ async def download_and_send_images(destination, image_url_groups, fallback_chann
         await fallback_channel.send(f"画像の送信中に予期せぬエラーが発生しました: `{type(e).__name__}`")
         return False
 
+# ★★★★★ ここからが新しいヘルパー関数 ★★★★★
+async def get_image_urls_from_message(content):
+    """メッセージの内容から画像URLのグループと元のURLを抽出する"""
+    image_url_groups = []
+    original_url = ""
+
+    # TwitterのURLをチェック
+    twitter_match = re.search(r'(https?://(?:www\.)?(?:x|twitter)\.com/\w+/status/\d+)', content)
+    if twitter_match:
+        original_url = twitter_match.group(1)
+        status_part = re.search(r'(\w+/status/\d+)', original_url).group(1)
+        api_url = f"https://api.fxtwitter.com/{status_part}"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.get(api_url) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    media_list = data.get('tweet', {}).get('media', {}).get('all', [])
+                    for media in media_list:
+                        image_url_groups.append([media['url']])
+        return image_url_groups, original_url
+
+    # PixivのURLをチェック
+    pixiv_match = re.search(r'(https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/\d+)', content)
+    if pixiv_match:
+        original_url = pixiv_match.group(1)
+        artwork_id = re.search(r'artworks/(\d+)', original_url).group(1)
+        api_url = f"https://www.phixiv.net/api/info?id={artwork_id}"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.get(api_url) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    proxy_urls = data.get("image_proxy_urls", [])
+                    pattern = re.compile(r'/img/(\d{4}/\d{2}/\d{2}/\d{2}/\d{2}/\d{2})/(\d+)_p(\d+)')
+                    for proxy_url in proxy_urls:
+                        url_match = pattern.search(proxy_url)
+                        if url_match:
+                            date_path, illust_id, page_num = url_match.groups()
+                            base_url = f"https://i.pixiv.re/img-original/img/{date_path}/{illust_id}_p{page_num}"
+                            image_url_groups.append([f"{base_url}.png", f"{base_url}.jpg", f"{base_url}.gif"])
+        return image_url_groups, original_url
+
+    return None, None
+# ★★★★★ ここまでが新しいヘルパー関数 ★★★★★
+
 # -----------------------------------------------------------------------------
 # メインの処理関数
 # -----------------------------------------------------------------------------
@@ -167,78 +209,18 @@ async def process_media_link(message, url_type):
     try:
         await message.add_reaction(processing_emoji)
 
-        image_url_groups = []
-        original_url = ""
-        
-        async with message.channel.typing():
-            if url_type == 'twitter':
-                match = re.search(r'(https?://(?:www\.)?(?:x|twitter)\.com/\w+/status/\d+)', message.content)
-                if not match: return
-                original_url = match.group(1)
-                status_part = re.search(r'(\w+/status/\d+)', original_url).group(1)
-                
-                api_url = f"https://api.fxtwitter.com/{status_part}"
-                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
-                async with aiohttp.ClientSession(headers=headers) as session:
-                    async with session.get(api_url) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            media_list = data.get('tweet', {}).get('media', {}).get('all', [])
-                            for media in media_list:
-                                image_url_groups.append([media['url']])
+        image_url_groups, original_url = await get_image_urls_from_message(message.content)
+
+        if image_url_groups:
+            user_id = message.author.id
+            send_preference = user_settings.get(user_id, 'channel')
             
-            elif url_type == 'pixiv':
-                match = re.search(r'(https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/\d+)', message.content)
-                if not match: return
-                original_url = match.group(1)
-                artwork_id = re.search(r'artworks/(\d+)', original_url).group(1)
-
-                api_url = f"https://www.phixiv.net/api/info?id={artwork_id}"
-                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
-                
-                async with aiohttp.ClientSession(headers=headers) as session:
-                    async with session.get(api_url) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            
-                            proxy_urls = data.get("image_proxy_urls", [])
-                            if not proxy_urls:
-                                await message.channel.send("APIから画像URLが見つかりませんでした。")
-                                return
-                            
-                            pattern = re.compile(r'/img/(\d{4}/\d{2}/\d{2}/\d{2}/\d{2}/\d{2})/(\d+)_p(\d+)')
-
-                            for proxy_url in proxy_urls:
-                                url_match = pattern.search(proxy_url)
-                                if url_match:
-                                    date_path = url_match.group(1)
-                                    illust_id = url_match.group(2)
-                                    page_num = url_match.group(3)
-                                    
-                                    base_url = f"https://i.pixiv.re/img-original/img/{date_path}/{illust_id}_p{page_num}"
-                                    potential_urls = [f"{base_url}.png", f"{base_url}.jpg", f"{base_url}.gif"]
-                                    image_url_groups.append(potential_urls)
-                                else:
-                                    print(f"Could not parse proxy URL: {proxy_url}")
-                            
-                            if not image_url_groups:
-                                await message.channel.send("高画質画像URLの解析に失敗しました。")
-
-                        else:
-                            print(f"phixiv API returned status {resp.status} for ID {artwork_id}")
-                            await message.channel.send(f"APIエラーが発生しました (Status: {resp.status})。サービスがダウンしている可能性があります。", reference=message)
-                            return
-
-            if image_url_groups:
-                user_id = message.author.id
-                send_preference = user_settings.get(user_id, 'channel')
-                
-                await download_and_send_images(message.channel, image_url_groups, message.channel, message.author)
-                
-                if send_preference == 'dm':
-                    await download_and_send_images(message.author, image_url_groups, message.channel, message.author, original_url=original_url)
-            else:
-                await message.channel.send("このリンクからは画像を見つけられませんでした。")
+            await download_and_send_images(message.channel, image_url_groups, message.channel, message.author)
+            
+            if send_preference == 'dm':
+                await download_and_send_images(message.author, image_url_groups, message.channel, message.author, original_url=original_url)
+        else:
+            await message.channel.send("このリンクからは画像を見つけられませんでした。")
 
     except Exception as e:
         print(f"予期せぬエラーが発生しました: {e}")
@@ -295,10 +277,7 @@ async def on_ready():
     print(f'Bot準備完了～ Logged in as {client.user}')
     game = discord.Game("!dmでDM送信ON/OFF")
     await client.change_presence(status=discord.Status.online, activity=game)
-    # ★★★★★ ここからが修正箇所 ★★★★★
-    # Bot起動時に永続Viewを登録する
     client.add_view(DeleteButtonView())
-    # ★★★★★ ここまでが修正箇所 ★★★★★
 
 @client.event
 async def on_message(message):
@@ -361,11 +340,14 @@ async def on_message(message):
         await message.channel.send(random.choice(STICKER))
         return
 
+# ★★★★★ ここからが新しいリアクション処理 ★★★★★
 @client.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+    # Bot自身のリアクションは無視
     if payload.user_id == client.user.id:
         return
 
+    # 対象の絵文字かチェック
     target_emojis = ['<:sikei:1404428286112825404>', '❤️']
     if str(payload.emoji) not in target_emojis:
         return
@@ -378,31 +360,24 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     except (discord.NotFound, discord.Forbidden):
         return
 
-    if message.author.id != client.user.id:
+    # Botが投稿したメッセージへのリアクションは無視
+    if message.author.bot:
         return
 
-    if not message.embeds:
-        return
-
-    image_url_groups = []
-    for embed in message.embeds:
-        if embed.image and embed.image.url:
-            image_url_groups.append([embed.image.url])
-
-    if not image_url_groups:
-        return
-
+    # リアクションしたユーザーを取得
     try:
         user = await client.fetch_user(payload.user_id)
     except discord.NotFound:
         return
-    
-    send_preference = user_settings.get(user.id, 'channel')
-    
-    await download_and_send_images(channel, image_url_groups, channel, user)
-    
-    if send_preference == 'dm':
-        await download_and_send_images(user, image_url_groups, channel, user)
+
+    # メッセージから画像URLを取得
+    image_url_groups, original_url = await get_image_urls_from_message(message.content)
+
+    if image_url_groups:
+        print(f"Processing reaction save for {user.name} on message {message.id}")
+        # リアクションしたユーザーのDMに、元URLと画像を送信
+        await download_and_send_images(user, image_url_groups, channel, user, original_url=original_url)
+# ★★★★★ ここまでが新しいリアクション処理 ★★★★★
     
 
 # -----------------------------------------------------------------------------
