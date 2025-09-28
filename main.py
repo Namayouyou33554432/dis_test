@@ -1,15 +1,37 @@
 import os
 import random
 import discord
+from discord.ext import commands
 from flask import Flask
-import threading
 import asyncio
 import re
 import io
 import json
 import aiohttp
 import traceback
-from datetime import datetime, timedelta, timezone
+
+# Webサーバーを非同期実行するためのライブラリ
+from hypercorn.config import Config
+from hypercorn.asyncio import serve
+
+# -----------------------------------------------------------------------------
+# 状態の永続化 (JSONファイル管理)
+# -----------------------------------------------------------------------------
+SETTINGS_FILE = 'user_settings.json'
+
+def load_user_settings():
+    """起動時に設定ファイルを読み込む関数"""
+    try:
+        with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        # ファイルが存在しないか中身が空の場合は空の辞書を返す
+        return {}
+
+def save_user_settings(settings):
+    """設定変更時にファイルに書き出す関数"""
+    with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(settings, f, indent=4)
 
 # -----------------------------------------------------------------------------
 # Flask (Render用Webサーバー)
@@ -18,8 +40,8 @@ app = Flask(__name__)
 
 @app.route('/')
 def hello():
-    """Renderが正常に起動しているか確認するためのルート"""
-    return "Discord Bot is active now"
+    """Renderが正常に起動しているかUptimeRobotが確認するためのルート"""
+    return "Discord Bot is active and running in a unified process."
 
 # -----------------------------------------------------------------------------
 # Discordボットの設定
@@ -27,14 +49,14 @@ def hello():
 intents = discord.Intents.default()
 intents.message_content = True
 intents.reactions = True
-client = discord.Client(intents=intents)
 
-# ユーザーごとの送信先設定を記憶する辞書
-# { user_id: "dm" or "channel" }
-# デフォルトは 'channel' (DMオフ)
-user_settings = {}
+# discord.Client の代わりに commands.Bot を使用．コマンド管理が容易になる．
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-# (SHOT_TYPE, STICKER, GACHA_* 定数は変更ないため省略)
+# ★変更点: 起動時に一度だけ設定を読み込み，botオブジェクトに属性として持たせる
+bot.user_settings = load_user_settings()
+
+# (SHOT_TYPE, STICKER, GACHA_* 定数は変更なし)
 SHOT_TYPE = (
     (4, "紅霊夢A", "紅霊夢B", "紅魔理沙A", "紅魔理沙B"),
     (6, "妖霊夢A", "妖霊夢B", "妖魔理沙A", "妖魔理沙B", "妖咲夜A", "妖咲夜B"),
@@ -49,13 +71,11 @@ SHOT_TYPE = (
     (9, "霊夢W", "霊夢E", "霊夢O", "魔理沙W", "魔理沙E", "魔理沙O", "妖夢W", "妖夢E", "妖夢O"),
     (4, "虹霊夢", "虹魔理沙", "虹咲夜", "虹早苗"),
 )
-
 STICKER = (
     "<:kazusa:1318960518215766117>", "<:plana1:1318960569822351370>", "<:plana:1318960622268059728>",
     "<:nyny:1318960704249663498>", "<:plana2:1318964188537815150>", "<:usio:1318964272038019132>",
     "<:chiaki:1318964308628996106>",
 )
-
 GACHA_TRIGGER = "<:img:1332781427498029106>"
 GACHA_STAR_1 = ("<:JYUNYA:921397676166234162>", "<:maiahi:855369574819168266>", "<:emoji_33:901741259260039239>")
 GACHA_STAR_2 = ("<:beerjunya:859283357841489950>",)
@@ -153,7 +173,6 @@ async def download_and_send_images(destination, image_url_groups, fallback_chann
         await fallback_channel.send(f"画像の送信中に予期せぬエラーが発生しました: `{type(e).__name__}`")
         return False
 
-# ★★★★★ ここからが新しいヘルパー関数 ★★★★★
 async def get_image_urls_from_message(content):
     """メッセージの内容から画像URLのグループと元のURLを抽出する"""
     image_url_groups = []
@@ -163,7 +182,9 @@ async def get_image_urls_from_message(content):
     twitter_match = re.search(r'(https?://(?:www\.)?(?:x|twitter)\.com/\w+/status/\d+)', content)
     if twitter_match:
         original_url = twitter_match.group(1)
-        status_part = re.search(r'(\w+/status/\d+)', original_url).group(1)
+        status_part_match = re.search(r'(\w+/status/\d+)', original_url)
+        if not status_part_match: return None, None
+        status_part = status_part_match.group(1)
         api_url = f"https://api.fxtwitter.com/{status_part}"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
         async with aiohttp.ClientSession(headers=headers) as session:
@@ -179,7 +200,9 @@ async def get_image_urls_from_message(content):
     pixiv_match = re.search(r'(https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/\d+)', content)
     if pixiv_match:
         original_url = pixiv_match.group(1)
-        artwork_id = re.search(r'artworks/(\d+)', original_url).group(1)
+        artwork_id_match = re.search(r'artworks/(\d+)', original_url)
+        if not artwork_id_match: return None, None
+        artwork_id = artwork_id_match.group(1)
         api_url = f"https://www.phixiv.net/api/info?id={artwork_id}"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
         async with aiohttp.ClientSession(headers=headers) as session:
@@ -197,11 +220,7 @@ async def get_image_urls_from_message(content):
         return image_url_groups, original_url
 
     return None, None
-# ★★★★★ ここまでが新しいヘルパー関数 ★★★★★
 
-# -----------------------------------------------------------------------------
-# メインの処理関数
-# -----------------------------------------------------------------------------
 async def process_media_link(message, url_type):
     processing_emoji = "🤔"
     success_emoji = '❤️'
@@ -212,8 +231,9 @@ async def process_media_link(message, url_type):
         image_url_groups, original_url = await get_image_urls_from_message(message.content)
 
         if image_url_groups:
-            user_id = message.author.id
-            send_preference = user_settings.get(user_id, 'channel')
+            # ★変更点: bot.user_settings を参照し，キーとして文字列のIDを使用
+            user_id = str(message.author.id)
+            send_preference = bot.user_settings.get(user_id, 'channel')
             
             await download_and_send_images(message.channel, image_url_groups, message.channel, message.author)
             
@@ -228,7 +248,7 @@ async def process_media_link(message, url_type):
         await message.channel.send(f"予期せぬエラーが発生しました: `{type(e).__name__}`")
     finally:
         try:
-            await message.remove_reaction(processing_emoji, client.user)
+            await message.remove_reaction(processing_emoji, bot.user)
         except discord.HTTPException:
             pass
         try:
@@ -246,14 +266,14 @@ async def process_embed_images(message, embeds):
         await message.channel.send("この埋め込みには保存できる画像が見つかりませんでした。", reference=message)
         return
     
-    user_id = message.author.id
-    send_preference = user_settings.get(user_id, 'channel')
+    # ★変更点: bot.user_settings を参照し，キーとして文字列のIDを使用
+    user_id = str(message.author.id)
+    send_preference = bot.user_settings.get(user_id, 'channel')
     
     await download_and_send_images(message.channel, image_url_groups, message.channel, message.author)
     
     if send_preference == 'dm':
         await download_and_send_images(message.author, image_url_groups, message.channel, message.author)
-
 
 def perform_gacha_draw(guaranteed=False):
     weights = GACHA_WEIGHTS_GUARANTEED if guaranteed else GACHA_WEIGHTS_NORMAL
@@ -270,30 +290,35 @@ def get_random_shot():
     return random.choice(game[1:])
 
 # -----------------------------------------------------------------------------
-# Discordイベント
+# Botコマンド
 # -----------------------------------------------------------------------------
-@client.event
-async def on_ready():
-    print(f'Bot準備完了～ Logged in as {client.user}')
-    game = discord.Game("!dmでDM送信ON/OFF")
-    await client.change_presence(status=discord.Status.online, activity=game)
-    client.add_view(DeleteButtonView())
+@bot.command(name="dm")
+async def toggle_dm(ctx: commands.Context):
+    """画像のDM送信設定をON/OFFします．"""
+    user_id = str(ctx.author.id)
+    current_setting = bot.user_settings.get(user_id, 'channel')
 
-@client.event
-async def on_message(message):
-    if message.author == client.user or message.author.bot:
+    if current_setting == 'channel':
+        bot.user_settings[user_id] = 'dm'
+        await ctx.send(f"{ctx.author.mention} 画像のDM送信を **ON** にしました．")
+    else:
+        bot.user_settings[user_id] = 'channel'
+        await ctx.send(f"{ctx.author.mention} 画像のDM送信を **OFF** にしました．")
+    
+    # ★重要: 変更をファイルに保存する
+    save_user_settings(bot.user_settings)
+
+# -----------------------------------------------------------------------------
+# Discordイベントリスナー
+# -----------------------------------------------------------------------------
+@bot.listen()
+async def on_message(message: discord.Message):
+    """コマンド以外のメッセージを処理するリスナー"""
+    if message.author == bot.user or message.author.bot:
         return
     
-    if message.content.lower() == '!dm':
-        user_id = message.author.id
-        current_setting = user_settings.get(user_id, 'channel')
-
-        if current_setting == 'channel':
-            user_settings[user_id] = 'dm'
-            await message.channel.send(f"{message.author.mention} 画像のDM送信を **ON** にしました。")
-        else:
-            user_settings[user_id] = 'channel'
-            await message.channel.send(f"{message.author.mention} 画像のDM送信を **OFF** にしました。")
+    # プレフィックス付きのコマンドはコマンドとして処理されるため，ここでは無視する
+    if message.content.startswith(bot.command_prefix):
         return
 
     if message.content.lower() in ["再送信", "download"]:
@@ -302,16 +327,15 @@ async def on_message(message):
                 referenced_message = await message.channel.fetch_message(message.reference.message_id)
                 if referenced_message.embeds:
                     asyncio.create_task(process_embed_images(message, referenced_message.embeds))
-                    return
             except discord.NotFound:
                 await message.channel.send("返信元のメッセージが見つかりませんでした。", reference=message)
             except discord.Forbidden:
                 await message.channel.send("メッセージの読み取り権限がありません。", reference=message)
-            return
+        return
 
     if "x.com" in message.content or "twitter.com" in message.content:
         asyncio.create_task(process_media_link(message, 'twitter'))
-        return 
+        return
 
     if "pixiv.net" in message.content:
         asyncio.create_task(process_media_link(message, 'pixiv'))
@@ -321,7 +345,7 @@ async def on_message(message):
         await send_gacha_results(message)
         return
         
-    if (client.user.mentioned_in(message) or any(keyword in message.content for keyword in ["本日の機体", "今日の機体", "きょうのきたい", "ほんじつのきたい", "イッツルナティックターイム！"])):
+    if (bot.user.mentioned_in(message) or any(keyword in message.content for keyword in ["本日の機体", "今日の機体", "きょうのきたい", "ほんじつのきたい", "イッツルナティックターイム！"])):
         await message.channel.send(get_random_shot())
         return
     if any(keyword in message.content for keyword in ["にゃ～ん", "にゃーん"]):
@@ -340,70 +364,71 @@ async def on_message(message):
         await message.channel.send(random.choice(STICKER))
         return
 
-# ★★★★★ ここからが新しいリアクション処理 ★★★★★
-@client.event
+@bot.listen()
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
-    # Bot自身のリアクションは無視
-    if payload.user_id == client.user.id:
+    """リアクションによる画像保存を処理するリスナー"""
+    if payload.user_id == bot.user.id:
         return
 
-    # 対象の絵文字かチェック
     target_emojis = ['<:sikei:1404428286112825404>', '❤️']
     if str(payload.emoji) not in target_emojis:
         return
 
     try:
-        channel = client.get_channel(payload.channel_id)
+        channel = bot.get_channel(payload.channel_id)
         if not isinstance(channel, discord.TextChannel):
              return
         message = await channel.fetch_message(payload.message_id)
     except (discord.NotFound, discord.Forbidden):
         return
 
-    # Botが投稿したメッセージへのリアクションは無視
     if message.author.bot:
         return
 
-    # リアクションしたユーザーを取得
     try:
-        user = await client.fetch_user(payload.user_id)
+        user = await bot.fetch_user(payload.user_id)
     except discord.NotFound:
         return
 
-    # メッセージから画像URLを取得
     image_url_groups, original_url = await get_image_urls_from_message(message.content)
 
     if image_url_groups:
         print(f"Processing reaction save for {user.name} on message {message.id}")
-        # リアクションしたユーザーのDMに、元URLと画像を送信
         await download_and_send_images(user, image_url_groups, channel, user, original_url=original_url)
-# ★★★★★ ここまでが新しいリアクション処理 ★★★★★
     
+# -----------------------------------------------------------------------------
+# 統合起動処理
+# -----------------------------------------------------------------------------
+@bot.event
+async def setup_hook():
+    """BotがDiscordにログインする前に一度だけ実行される"""
+    # 永続Viewを登録
+    bot.add_view(DeleteButtonView())
+    
+    # Webサーバーをバックグラウンドタスクとして起動
+    port = int(os.environ.get("PORT", 8080))
+    config = Config()
+    config.bind = [f"0.0.0.0:{port}"]
+    
+    # Botのイベントループ上でWebサーバーを協調動作させる
+    bot.loop.create_task(serve(app, config))
+    print(f"--- 🌐 Hypercorn web server is running on port {port} ---")
+
+@bot.event
+async def on_ready():
+    """Botの準備が完了したときのイベント"""
+    print(f'--- 🚀 Logged in as {bot.user} ---')
+    game = discord.Game("!dmでDM送信ON/OFF")
+    await bot.change_presence(status=discord.Status.online, activity=game)
 
 # -----------------------------------------------------------------------------
-# 並列起動
+# メインの実行ブロック
 # -----------------------------------------------------------------------------
-def run_bot():
+if __name__ == "__main__":
     bot_token = os.environ.get("DISCORD_BOT_TOKEN")
     if not bot_token:
-        print("DISCORD_BOT_TOKENが設定されていません。")
-        return
+        print("環境変数 DISCORD_BOT_TOKEN が設定されていません．")
+    else:
+        # bot.run() を呼び出すと，setup_hook -> on_ready の順で実行される
+        bot.run(bot_token)
 
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    
-    loop.create_task(client.start(bot_token))
-    
-    if not loop.is_running():
-        loop.run_forever()
-
-
-bot_thread = threading.Thread(target=run_bot)
-bot_thread.daemon = True
-bot_thread.start()
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
