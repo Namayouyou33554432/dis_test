@@ -13,6 +13,8 @@ import traceback
 # Webサーバーを非同期実行するためのライブラリ
 from hypercorn.config import Config
 from hypercorn.asyncio import serve
+# ★追加: Flask(WSGI)をASGIに変換するライブラリ
+from asgiref.wsgi import WsgiToAsgi
 
 # -----------------------------------------------------------------------------
 # 状態の永続化 (JSONファイル管理)
@@ -53,7 +55,7 @@ intents.reactions = True
 # discord.Client の代わりに commands.Bot を使用．コマンド管理が容易になる．
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ★変更点: 起動時に一度だけ設定を読み込み，botオブジェクトに属性として持たせる
+# ★起動時に一度だけ設定を読み込み，botオブジェクトに属性として持たせる
 bot.user_settings = load_user_settings()
 
 # (SHOT_TYPE, STICKER, GACHA_* 定数は変更なし)
@@ -238,7 +240,7 @@ async def process_media_link(message, url_type):
         image_url_groups, original_url = await get_image_urls_from_message(message.content)
 
         if image_url_groups:
-            # ★変更点: bot.user_settings を参照し，キーとして文字列のIDを使用
+            # ★bot.user_settings を参照し，キーとして文字列のIDを使用
             user_id = str(message.author.id)
             send_preference = bot.user_settings.get(user_id, 'channel')
             
@@ -273,7 +275,7 @@ async def process_embed_images(message, embeds):
         await message.channel.send("この埋め込みには保存できる画像が見つかりませんでした。", reference=message)
         return
     
-    # ★変更点: bot.user_settings を参照し，キーとして文字列のIDを使用
+    # ★bot.user_settings を参照し，キーとして文字列のIDを使用
     user_id = str(message.author.id)
     send_preference = bot.user_settings.get(user_id, 'channel')
     
@@ -423,8 +425,11 @@ async def setup_hook():
     config = Config()
     config.bind = [f"0.0.0.0:{port}"]
     
+    # ★修正: Flask(WSGI) アプリを ASGI アプリに変換
+    asgi_app = WsgiToAsgi(app)
+    
     # Botのイベントループ上でWebサーバーを協調動作させる
-    bot.loop.create_task(serve(app, config))
+    bot.loop.create_task(serve(asgi_app, config))
     print(f"--- 🌐 Hypercorn web server is running on port {port} ---")
 
 @bot.event
