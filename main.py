@@ -108,34 +108,39 @@ async def download_and_send_images(destination, image_url_groups, fallback_chann
 
     files_to_send = []
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+        # ★修正: 毎回セッションを作成せず、bot.session を使い回す
+        # Pixiv用のRefererヘッダーを設定
+        request_headers = {
             'Referer': 'https://www.pixiv.net/'
         }
-        async with aiohttp.ClientSession(headers=headers) as session:
-            MAX_FILE_SIZE = 24 * 1024 * 1024
-            for i, url_group in enumerate(image_url_groups):
-                download_success = False
-                for img_url in url_group:
-                    try:
-                        async with session.get(img_url) as img_resp:
-                            if img_resp.status == 200:
-                                image_data = await img_resp.read()
-                                if len(image_data) > MAX_FILE_SIZE:
-                                    await fallback_channel.send(f"画像 {i+1} はサイズが大きすぎるため、送信できません。({len(image_data) / 1024 / 1024:.2f}MB)")
-                                    download_success = True
-                                    break
-                                
-                                filename = os.path.basename(img_url.split('?')[0])
-                                files_to_send.append(discord.File(io.BytesIO(image_data), filename=filename))
+        
+        # bot.session は setup_hook で初期化されている前提
+        session = bot.session
+
+        MAX_FILE_SIZE = 24 * 1024 * 1024
+        for i, url_group in enumerate(image_url_groups):
+            download_success = False
+            for img_url in url_group:
+                try:
+                    # セッション共有のため、with session... のブロックを削除し、直接 get を呼ぶ
+                    async with session.get(img_url, headers=request_headers) as img_resp:
+                        if img_resp.status == 200:
+                            image_data = await img_resp.read()
+                            if len(image_data) > MAX_FILE_SIZE:
+                                await fallback_channel.send(f"画像 {i+1} はサイズが大きすぎるため、送信できません。({len(image_data) / 1024 / 1024:.2f}MB)")
                                 download_success = True
                                 break
-                    except Exception as dl_error:
-                        print(f"Attempt failed for {img_url}: {dl_error}")
-                        continue
-                
-                if not download_success:
-                    await fallback_channel.send(f"画像 {i+1} のダウンロードに全ての拡張子で失敗しました。")
+                            
+                            filename = os.path.basename(img_url.split('?')[0])
+                            files_to_send.append(discord.File(io.BytesIO(image_data), filename=filename))
+                            download_success = True
+                            break
+                except Exception as dl_error:
+                    print(f"Attempt failed for {img_url}: {dl_error}")
+                    continue
+            
+            if not download_success:
+                await fallback_channel.send(f"画像 {i+1} のダウンロードに全ての拡張子で失敗しました。")
     except Exception as e:
         print(f"画像ダウンロード中に予期せぬエラーが発生しました: {e}")
         traceback.print_exc()
@@ -178,6 +183,9 @@ async def get_image_urls_from_message(content):
     image_url_groups = []
     original_url = ""
 
+    # ★修正: 毎回セッションを作成せず、bot.session を使い回す
+    session = bot.session
+
     # TwitterのURLをチェック
     twitter_match = re.search(r'(https?://(?:www\.)?(?:x|twitter)\.com/\w+/status/\d+)', content)
     if twitter_match:
@@ -186,14 +194,14 @@ async def get_image_urls_from_message(content):
         if not status_part_match: return None, None
         status_part = status_part_match.group(1)
         api_url = f"https://api.fxtwitter.com/{status_part}"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.get(api_url) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    media_list = data.get('tweet', {}).get('media', {}).get('all', [])
-                    for media in media_list:
-                        image_url_groups.append([media['url']])
+        
+        # User-Agentはセッション作成時に設定済みなのでここでは不要
+        async with session.get(api_url) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                media_list = data.get('tweet', {}).get('media', {}).get('all', [])
+                for media in media_list:
+                    image_url_groups.append([media['url']])
         return image_url_groups, original_url
 
     # PixivのURLをチェック
@@ -204,19 +212,18 @@ async def get_image_urls_from_message(content):
         if not artwork_id_match: return None, None
         artwork_id = artwork_id_match.group(1)
         api_url = f"https://www.phixiv.net/api/info?id={artwork_id}"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.get(api_url) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    proxy_urls = data.get("image_proxy_urls", [])
-                    pattern = re.compile(r'/img/(\d{4}/\d{2}/\d{2}/\d{2}/\d{2}/\d{2})/(\d+)_p(\d+)')
-                    for proxy_url in proxy_urls:
-                        url_match = pattern.search(proxy_url)
-                        if url_match:
-                            date_path, illust_id, page_num = url_match.groups()
-                            base_url = f"https://i.pixiv.re/img-original/img/{date_path}/{illust_id}_p{page_num}"
-                            image_url_groups.append([f"{base_url}.png", f"{base_url}.jpg", f"{base_url}.gif"])
+        
+        async with session.get(api_url) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                proxy_urls = data.get("image_proxy_urls", [])
+                pattern = re.compile(r'/img/(\d{4}/\d{2}/\d{2}/\d{2}/\d{2}/\d{2})/(\d+)_p(\d+)')
+                for proxy_url in proxy_urls:
+                    url_match = pattern.search(proxy_url)
+                    if url_match:
+                        date_path, illust_id, page_num = url_match.groups()
+                        base_url = f"https://i.pixiv.re/img-original/img/{date_path}/{illust_id}_p{page_num}"
+                        image_url_groups.append([f"{base_url}.png", f"{base_url}.jpg", f"{base_url}.gif"])
         return image_url_groups, original_url
 
     return None, None
@@ -404,6 +411,12 @@ async def setup_hook():
     """BotがDiscordにログインする前に一度だけ実行される"""
     # 永続Viewを登録
     bot.add_view(DeleteButtonView())
+
+    # ★修正: HTTPセッションをここで1つだけ作成し、Bot全体で共有する（クラッシュ対策の要）
+    # 共通のUser-Agentを設定
+    bot.session = aiohttp.ClientSession(headers={
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
+    })
     
     # Webサーバーをバックグラウンドタスクとして起動
     port = int(os.environ.get("PORT", 8080))
@@ -430,5 +443,9 @@ if __name__ == "__main__":
         print("環境変数 DISCORD_BOT_TOKEN が設定されていません．")
     else:
         # bot.run() を呼び出すと，setup_hook -> on_ready の順で実行される
-        bot.run(bot_token)
-
+        try:
+            bot.run(bot_token)
+        finally:
+            # Bot終了時にセッションを閉じる
+            if hasattr(bot, 'session') and not bot.session.closed:
+                asyncio.run(bot.session.close())
