@@ -42,7 +42,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def hello():
-    """Renderが正常に起動しているかUptimeRobotが確認するためのルート"""
+    """cron-job.orgからのGETでRenderを起動状態に保つためのルート"""
     return "Discord Bot is active and running in a unified process."
 
 # -----------------------------------------------------------------------------
@@ -54,6 +54,14 @@ intents.reactions = True
 
 # discord.Client の代わりに commands.Bot を使用．コマンド管理が容易になる．
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+
+@app.route('/health')
+def health():
+    """Discord Gatewayへの接続状態をRenderのヘルスチェックへ返す．"""
+    if bot.is_ready() and not bot.is_closed():
+        return "Discord Bot is ready.", 200
+    return "Discord Bot is not ready.", 503
 
 # ★起動時に一度だけ設定を読み込み，botオブジェクトに属性として持たせる
 bot.user_settings = load_user_settings()
